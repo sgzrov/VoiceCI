@@ -61,6 +61,15 @@ export const baselines = pgTable("baselines", {
     .defaultNow(),
 });
 
+export const apiKeys = pgTable("api_keys", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  key_hash: text("key_hash").notNull().unique(),
+  name: text("name").notNull(),
+  created_at: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
 export const artifacts = pgTable("artifacts", {
   id: uuid("id").primaryKey().defaultRandom(),
   run_id: uuid("run_id")

@@ -1,0 +1,33 @@
+{
+  "id": "interruptions",
+  "name": "Interruptions Suite",
+  "scenarios": [
+    {
+      "id": "mid-sentence",
+      "name": "Mid-Sentence Interrupt",
+      "user_script": [
+        "I want to book a",
+        "Actually never mind, what are your hours?"
+      ],
+      "expectations": {
+        "flow_completion_min": 0.5,
+        "max_latency_ms": 5000,
+        "interruption_expected": true
+      }
+    },
+    {
+      "id": "topic-switch",
+      "name": "Topic Switch",
+      "user_script": [
+        "Tell me about your booking process.",
+        "Wait, first tell me about your refund policy.",
+        "OK now back to booking, what times are available?"
+      ],
+      "expectations": {
+        "flow_completion_min": 0.6,
+        "max_latency_ms": 5000,
+        "interruption_expected": true
+      }
+    }
+  ]
+}

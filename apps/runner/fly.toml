@@ -1,0 +1,18 @@
+app = "voiceci-runner"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  NODE_ENV = "production"
+
+# Runner is ephemeral — no HTTP service.
+# It's spawned by the worker via Fly Machines API,
+# runs scenarios, reports back, and auto-destroys.
+# This fly.toml exists only to build and push the image.
+
+[[vm]]
+  memory = "1024mb"
+  cpu_kind = "shared"
+  cpus = 1

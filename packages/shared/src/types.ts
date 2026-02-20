@@ -1,0 +1,141 @@
+export type RunStatus = "queued" | "running" | "pass" | "fail";
+export type SourceType = "bundle";
+export type ScenarioStatus = "pass" | "fail";
+export type RunMode = "smoke" | "ci" | "deep";
+
+export interface Run {
+  id: string;
+  status: RunStatus;
+  source_type: SourceType;
+  bundle_key: string;
+  bundle_hash: string;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  duration_ms: number | null;
+  aggregate_json: AggregateMetrics | null;
+  error_text: string | null;
+}
+
+export interface ScenarioResult {
+  id: string;
+  run_id: string;
+  name: string;
+  status: ScenarioStatus;
+  metrics_json: ScenarioMetrics;
+  trace_json: TraceEntry[];
+  trace_ref: string | null;
+  created_at: string;
+}
+
+export interface ScenarioMetrics {
+  mean_latency_ms: number;
+  p95_latency_ms: number;
+  max_latency_ms: number;
+  duration_ms: number;
+  empty_response_count: number;
+  flow_completion_score: number;
+  token_usage: number | null;
+  cost_usd: number | null;
+}
+
+export interface AggregateMetrics {
+  total_scenarios: number;
+  passed: number;
+  failed: number;
+  mean_latency_ms: number;
+  p95_latency_ms: number;
+  max_latency_ms: number;
+  total_duration_ms: number;
+  total_token_usage: number | null;
+  total_cost_usd: number | null;
+}
+
+export interface TraceEntry {
+  role: "user" | "agent";
+  text: string;
+  timestamp_ms: number;
+  latency_ms?: number;
+}
+
+export interface Failure {
+  code: string;
+  message: string;
+  actual: string | number | null;
+  expected: string | number | null;
+  scenario: string;
+}
+
+export interface Baseline {
+  id: string;
+  run_id: string;
+  created_at: string;
+}
+
+export interface Artifact {
+  id: string;
+  run_id: string;
+  kind: string;
+  key: string;
+  content_type: string;
+  byte_size: number;
+  created_at: string;
+}
+
+export interface Scenario {
+  id: string;
+  name: string;
+  user_script: string[];
+  expectations: Expectations;
+}
+
+export interface Expectations {
+  flow_completion_min?: number;
+  max_latency_ms?: number;
+  must_mention_keywords?: string[];
+  interruption_expected?: boolean;
+}
+
+export interface Suite {
+  id: string;
+  name: string;
+  scenarios: Scenario[];
+}
+
+export interface VoiceCIConfig {
+  suite?: string;
+  suites?: string[];
+  agent_url?: string;
+  health_endpoint?: string;
+  start_command?: string;
+  adapter?: string;
+  timeout_ms?: number;
+}
+
+export interface PresignResponse {
+  upload_url: string;
+  bundle_key: string;
+}
+
+export interface CreateRunRequest {
+  source_type: SourceType;
+  bundle_key: string;
+  bundle_hash: string;
+  mode?: RunMode;
+}
+
+export interface RunnerCallbackPayload {
+  run_id: string;
+  status: "pass" | "fail";
+  scenario_results: ScenarioResultPayload[];
+  aggregate: AggregateMetrics;
+  error_text?: string;
+}
+
+export interface ScenarioResultPayload {
+  name: string;
+  status: ScenarioStatus;
+  metrics: ScenarioMetrics;
+  trace: TraceEntry[];
+  trace_ref?: string;
+}

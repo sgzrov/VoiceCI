@@ -1,0 +1,46 @@
+{
+  "id": "basic",
+  "name": "Basic Suite",
+  "scenarios": [
+    {
+      "id": "greeting",
+      "name": "Greeting Flow",
+      "user_script": [
+        "Hello, I need some help.",
+        "What services do you offer?"
+      ],
+      "expectations": {
+        "flow_completion_min": 0.8,
+        "max_latency_ms": 5000,
+        "must_mention_keywords": ["help"]
+      }
+    },
+    {
+      "id": "booking",
+      "name": "Booking Flow",
+      "user_script": [
+        "I'd like to book an appointment.",
+        "Thursday works for me.",
+        "Please confirm the booking."
+      ],
+      "expectations": {
+        "flow_completion_min": 0.8,
+        "max_latency_ms": 5000,
+        "must_mention_keywords": ["booking", "confirm"]
+      }
+    },
+    {
+      "id": "faq",
+      "name": "FAQ Flow",
+      "user_script": [
+        "What are your business hours?",
+        "Do you have a guarantee policy?",
+        "How can I contact support?"
+      ],
+      "expectations": {
+        "flow_completion_min": 1.0,
+        "max_latency_ms": 3000
+      }
+    }
+  ]
+}

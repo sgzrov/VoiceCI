@@ -1,118 +1,222 @@
 import type { FastifyInstance } from "fastify";
-import { eq, desc } from "drizzle-orm";
+import { eq } from "drizzle-orm";
+import { randomUUID } from "node:crypto";
 import { schema } from "@voiceci/db";
-import { McpRequestSchema } from "@voiceci/shared";
+import { createStorageClient } from "@voiceci/artifacts";
+import { z } from "zod";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 
 export async function mcpRoutes(app: FastifyInstance) {
-  app.post("/mcp", async (request, reply) => {
-    const rpc = McpRequestSchema.parse(request.body);
+  const mcpServer = new McpServer({
+    name: "voiceci",
+    version: "0.0.1",
+  });
 
-    switch (rpc.method) {
-      case "run_voice_ci": {
-        const params = rpc.params as {
-          bundle_key: string;
-          bundle_hash: string;
-          mode?: string;
-        };
+  // --- Tool: prepare_upload ---
+  mcpServer.tool(
+    "prepare_upload",
+    "Get a presigned URL to upload your voice agent bundle for testing",
+    {},
+    async () => {
+      const storage = createStorageClient();
+      const bundleKey = `bundles/${randomUUID()}.tar.gz`;
+      const uploadUrl = await storage.presignUpload(bundleKey);
 
-        const [run] = await app.db
-          .insert(schema.runs)
-          .values({
-            source_type: "bundle",
-            bundle_key: params.bundle_key,
-            bundle_hash: params.bundle_hash,
-            status: "queued",
-          })
-          .returning();
-
-        await app.runQueue.add("execute-run", {
-          run_id: run!.id,
-          bundle_key: params.bundle_key,
-          bundle_hash: params.bundle_hash,
-          mode: params.mode ?? "smoke",
-        });
-
-        return reply.send({
-          jsonrpc: "2.0",
-          id: rpc.id,
-          result: { run_id: run!.id, status: "queued" },
-        });
-      }
-
-      case "get_run_status": {
-        const params = rpc.params as { run_id: string };
-        const [run] = await app.db
-          .select()
-          .from(schema.runs)
-          .where(eq(schema.runs.id, params.run_id))
-          .limit(1);
-
-        if (!run) {
-          return reply.send({
-            jsonrpc: "2.0",
-            id: rpc.id,
-            error: { code: -32001, message: "Run not found" },
-          });
-        }
-
-        return reply.send({
-          jsonrpc: "2.0",
-          id: rpc.id,
-          result: { run_id: run.id, status: run.status },
-        });
-      }
-
-      case "get_run_result": {
-        const params = rpc.params as { run_id: string };
-        const [run] = await app.db
-          .select()
-          .from(schema.runs)
-          .where(eq(schema.runs.id, params.run_id))
-          .limit(1);
-
-        if (!run) {
-          return reply.send({
-            jsonrpc: "2.0",
-            id: rpc.id,
-            error: { code: -32001, message: "Run not found" },
-          });
-        }
-
-        const scenarios = await app.db
-          .select()
-          .from(schema.scenarioResults)
-          .where(eq(schema.scenarioResults.run_id, params.run_id));
-
-        return reply.send({
-          jsonrpc: "2.0",
-          id: rpc.id,
-          result: { ...run, scenarios },
-        });
-      }
-
-      case "list_test_suites": {
-        return reply.send({
-          jsonrpc: "2.0",
-          id: rpc.id,
-          result: {
-            suites: [
-              { id: "basic", name: "Basic Suite", path: "demo/suites/basic.json" },
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(
               {
-                id: "interruptions",
-                name: "Interruptions Suite",
-                path: "demo/suites/interruptions.json",
+                upload_url: uploadUrl,
+                bundle_key: bundleKey,
+                instructions: [
+                  "1. Bundle your project: tar czf /tmp/voiceci-bundle.tar.gz --exclude=node_modules --exclude=.git --exclude=dist --exclude=.next --exclude=.turbo --exclude=coverage -C <project_root> .",
+                  "2. Compute the hash: shasum -a 256 /tmp/voiceci-bundle.tar.gz | awk '{print $1}'",
+                  '3. Upload: curl -X PUT -T /tmp/voiceci-bundle.tar.gz -H "Content-Type: application/gzip" "<upload_url>"',
+                  "4. Call run_tests with the bundle_key and bundle_hash",
+                ],
               },
-            ],
+              null,
+              2
+            ),
           },
-        });
+        ],
+      };
+    }
+  );
+
+  // --- Tool: run_tests ---
+  mcpServer.tool(
+    "run_tests",
+    "Start a VoiceCI test run against an uploaded voice agent bundle",
+    {
+      bundle_key: z.string().describe("The bundle key returned by prepare_upload"),
+      bundle_hash: z.string().describe("SHA-256 hash of the uploaded bundle"),
+      mode: z
+        .enum(["smoke", "ci", "deep"])
+        .optional()
+        .describe("Test mode (default: smoke)"),
+    },
+    async ({ bundle_key, bundle_hash, mode }) => {
+      const [run] = await app.db
+        .insert(schema.runs)
+        .values({
+          source_type: "bundle",
+          bundle_key,
+          bundle_hash,
+          status: "queued",
+        })
+        .returning();
+
+      await app.runQueue.add("execute-run", {
+        run_id: run!.id,
+        bundle_key,
+        bundle_hash,
+        mode: mode ?? "smoke",
+      });
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({ run_id: run!.id, status: "queued" }, null, 2),
+          },
+        ],
+      };
+    }
+  );
+
+  // --- Tool: get_run_status ---
+  mcpServer.tool(
+    "get_run_status",
+    "Check the current status of a VoiceCI test run",
+    {
+      run_id: z.string().describe("The run ID to check"),
+    },
+    async ({ run_id }) => {
+      const [run] = await app.db
+        .select()
+        .from(schema.runs)
+        .where(eq(schema.runs.id, run_id))
+        .limit(1);
+
+      if (!run) {
+        return {
+          content: [{ type: "text" as const, text: "Run not found" }],
+          isError: true,
+        };
       }
 
-      default:
-        return reply.send({
-          jsonrpc: "2.0",
-          id: rpc.id,
-          error: { code: -32601, message: `Method not found: ${rpc.method}` },
-        });
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({ run_id: run.id, status: run.status }, null, 2),
+          },
+        ],
+      };
     }
+  );
+
+  // --- Tool: get_run_result ---
+  mcpServer.tool(
+    "get_run_result",
+    "Get the full results of a completed VoiceCI test run including scenario details and metrics",
+    {
+      run_id: z.string().describe("The run ID to get results for"),
+    },
+    async ({ run_id }) => {
+      const [run] = await app.db
+        .select()
+        .from(schema.runs)
+        .where(eq(schema.runs.id, run_id))
+        .limit(1);
+
+      if (!run) {
+        return {
+          content: [{ type: "text" as const, text: "Run not found" }],
+          isError: true,
+        };
+      }
+
+      const scenarios = await app.db
+        .select()
+        .from(schema.scenarioResults)
+        .where(eq(schema.scenarioResults.run_id, run_id));
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({ ...run, scenarios }, null, 2),
+          },
+        ],
+      };
+    }
+  );
+
+  // --- Tool: list_test_suites ---
+  mcpServer.tool(
+    "list_test_suites",
+    "List available VoiceCI test suites",
+    {},
+    async () => {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(
+              {
+                suites: [
+                  { id: "basic", name: "Basic Suite", path: "demo/suites/basic.json" },
+                  {
+                    id: "interruptions",
+                    name: "Interruptions Suite",
+                    path: "demo/suites/interruptions.json",
+                  },
+                ],
+              },
+              null,
+              2
+            ),
+          },
+        ],
+      };
+    }
+  );
+
+  // Stateless transport — no session tracking needed
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: undefined,
+  });
+
+  await mcpServer.connect(transport);
+
+  const authPreHandler = { preHandler: app.verifyApiKey };
+
+  // POST /mcp — handles MCP JSON-RPC requests
+  app.post("/mcp", authPreHandler, async (request, reply) => {
+    reply.hijack();
+    await transport.handleRequest(request.raw, reply.raw, request.body);
+  });
+
+  // GET /mcp — not needed for stateless, return 405
+  app.get("/mcp", authPreHandler, async (_request, reply) => {
+    reply.status(405).send({
+      jsonrpc: "2.0",
+      error: { code: -32000, message: "Method not allowed." },
+      id: null,
+    });
+  });
+
+  // DELETE /mcp — not needed for stateless, return 405
+  app.delete("/mcp", authPreHandler, async (_request, reply) => {
+    reply.status(405).send({
+      jsonrpc: "2.0",
+      error: { code: -32000, message: "Method not allowed." },
+      id: null,
+    });
   });
 }

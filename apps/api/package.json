@@ -1,0 +1,27 @@
+{
+  "name": "@voiceci/api",
+  "version": "0.0.1",
+  "private": true,
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@voiceci/shared": "workspace:*",
+    "@voiceci/db": "workspace:*",
+    "@voiceci/artifacts": "workspace:*",
+    "fastify": "^5.2.0",
+    "fastify-plugin": "^5.0.0",
+    "@fastify/cors": "^10.0.0",
+    "bullmq": "^5.30.0",
+    "drizzle-orm": "^0.38.0",
+    "ioredis": "^5.4.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}

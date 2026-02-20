@@ -1,0 +1,8 @@
+{
+  "suite": "./suites/basic.json",
+  "agent_url": "http://localhost:3001",
+  "health_endpoint": "/health",
+  "start_command": "node src/index.js",
+  "adapter": "http",
+  "timeout_ms": 60000
+}

@@ -1,5 +1,5 @@
 {
-  "name": "@voiceci/adapters",
+  "name": "@voiceci/voice",
   "version": "0.0.1",
   "private": true,
   "main": "dist/index.js",
@@ -9,11 +9,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@voiceci/shared": "workspace:*",
-    "@voiceci/voice": "workspace:*",
-    "ws": "^8.18.0",
-    "@livekit/rtc-node": "^0.13.0",
-    "livekit-server-sdk": "^2.0.0"
+    "ws": "^8.18.0"
   },
   "devDependencies": {
     "@types/ws": "^8.5.0",

@@ -11,6 +11,10 @@ interface TraceEntry {
   text: string;
   timestamp_ms: number;
   latency_ms?: number;
+  audio_ref?: string;
+  audio_duration_ms?: number;
+  stt_confidence?: number;
+  time_to_first_byte_ms?: number;
 }
 
 interface TraceViewerProps {
@@ -62,13 +66,28 @@ export function TraceViewer({ trace }: TraceViewerProps) {
                   )}
                 >
                   <p className="text-sm">{entry.text || "(empty)"}</p>
-                  <div className="flex gap-2 mt-1">
+                  <div className="flex flex-wrap gap-2 mt-1">
                     <span className="text-xs opacity-60">
                       {entry.timestamp_ms}ms
                     </span>
                     {entry.latency_ms !== undefined && (
                       <span className="text-xs opacity-60">
                         latency: {entry.latency_ms}ms
+                      </span>
+                    )}
+                    {entry.time_to_first_byte_ms !== undefined && (
+                      <span className="text-xs opacity-60">
+                        TTFB: {entry.time_to_first_byte_ms}ms
+                      </span>
+                    )}
+                    {entry.stt_confidence !== undefined && (
+                      <span className="text-xs opacity-60">
+                        STT: {entry.stt_confidence}
+                      </span>
+                    )}
+                    {entry.audio_duration_ms !== undefined && (
+                      <span className="text-xs opacity-60">
+                        audio: {(entry.audio_duration_ms / 1000).toFixed(1)}s
                       </span>
                     )}
                   </div>

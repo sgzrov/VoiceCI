@@ -1,6 +1,6 @@
 import fp from "fastify-plugin";
 import { createHash } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, and, isNull } from "drizzle-orm";
 import { schema } from "@voiceci/db";
 
 declare module "fastify" {
@@ -29,7 +29,12 @@ export const authPlugin = fp(async (app) => {
     const [found] = await app.db
       .select()
       .from(schema.apiKeys)
-      .where(eq(schema.apiKeys.key_hash, keyHash))
+      .where(
+        and(
+          eq(schema.apiKeys.key_hash, keyHash),
+          isNull(schema.apiKeys.revoked_at)
+        )
+      )
       .limit(1);
 
     if (!found) {

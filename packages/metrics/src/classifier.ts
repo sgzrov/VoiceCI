@@ -83,5 +83,47 @@ export function classifyFailures(
     }
   }
 
+  // Voice-specific failure checks
+  if (expectations.max_turn_gap_ms !== undefined) {
+    const turnGaps = agentEntries
+      .map((e) => e.time_to_first_byte_ms)
+      .filter((t): t is number => t !== undefined);
+    if (turnGaps.length > 0) {
+      const meanGap = Math.round(
+        turnGaps.reduce((a, b) => a + b, 0) / turnGaps.length
+      );
+      if (meanGap > expectations.max_turn_gap_ms) {
+        failures.push({
+          code: "TURN_GAP_EXCEEDED",
+          message: `Mean turn gap ${meanGap}ms exceeded max ${expectations.max_turn_gap_ms}ms`,
+          actual: meanGap,
+          expected: expectations.max_turn_gap_ms,
+          scenario: scenarioName,
+        });
+      }
+    }
+  }
+
+  if (expectations.min_stt_confidence !== undefined) {
+    const confidences = agentEntries
+      .map((e) => e.stt_confidence)
+      .filter((c): c is number => c !== undefined);
+    if (confidences.length > 0) {
+      const meanConf =
+        Math.round(
+          (confidences.reduce((a, b) => a + b, 0) / confidences.length) * 100
+        ) / 100;
+      if (meanConf < expectations.min_stt_confidence) {
+        failures.push({
+          code: "LOW_VOICE_CLARITY",
+          message: `Mean STT confidence ${meanConf} below min ${expectations.min_stt_confidence}`,
+          actual: meanConf,
+          expected: expectations.min_stt_confidence,
+          scenario: scenarioName,
+        });
+      }
+    }
+  }
+
   return failures;
 }

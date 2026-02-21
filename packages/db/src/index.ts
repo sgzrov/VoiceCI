@@ -3,7 +3,7 @@ import postgres from "postgres";
 import * as schema from "./schema.js";
 
 export { schema };
-export type { runs, scenarioResults, baselines, artifacts } from "./schema.js";
+export type { runs, scenarioResults, baselines, artifacts, apiKeys } from "./schema.js";
 
 export function createDb(connectionString: string) {
   const client = postgres(connectionString);

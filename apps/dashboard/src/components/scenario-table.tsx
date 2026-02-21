@@ -25,6 +25,10 @@ export function ScenarioTable({ scenarios, onSelect }: ScenarioTableProps) {
     return <p className="text-muted-foreground text-sm">No scenarios yet.</p>;
   }
 
+  const hasVoice = scenarios.some(
+    (s) => s.metrics_json["mean_turn_gap_ms"] !== undefined
+  );
+
   return (
     <Table>
       <TableHeader>
@@ -35,6 +39,8 @@ export function ScenarioTable({ scenarios, onSelect }: ScenarioTableProps) {
           <TableHead>P95</TableHead>
           <TableHead>Duration</TableHead>
           <TableHead>Flow Score</TableHead>
+          {hasVoice && <TableHead>Turn Gap</TableHead>}
+          {hasVoice && <TableHead>STT Confidence</TableHead>}
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -58,6 +64,20 @@ export function ScenarioTable({ scenarios, onSelect }: ScenarioTableProps) {
                   ? `${(Number(m["flow_completion_score"]) * 100).toFixed(0)}%`
                   : "-"}
               </TableCell>
+              {hasVoice && (
+                <TableCell>
+                  {m["mean_turn_gap_ms"] !== undefined
+                    ? `${m["mean_turn_gap_ms"]}ms`
+                    : "-"}
+                </TableCell>
+              )}
+              {hasVoice && (
+                <TableCell>
+                  {m["mean_stt_confidence"] !== undefined
+                    ? String(m["mean_stt_confidence"])
+                    : "-"}
+                </TableCell>
+              )}
             </TableRow>
           );
         })}

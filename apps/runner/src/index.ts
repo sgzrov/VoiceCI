@@ -1,4 +1,4 @@
-import { execSync } from "node:child_process";
+import { execSync, type ChildProcess } from "node:child_process";
 import { mkdirSync, existsSync } from "node:fs";
 import { loadConfig } from "@voiceci/config";
 import { loadScenarios } from "@voiceci/scenarios";
@@ -31,46 +31,69 @@ async function main() {
   console.log("Extracting bundle...");
   execSync(`tar -xzf /tmp/bundle.tar.gz -C ${WORK_DIR}`, { stdio: "inherit" });
 
-  // Load config and scenarios
+  // Load config and scenarios, merging MCP voice overrides if provided
   const config = loadConfig(WORK_DIR);
+  const voiceConfigJson = process.env["VOICE_CONFIG_JSON"];
+  if (voiceConfigJson) {
+    const overrides = JSON.parse(voiceConfigJson) as Record<string, unknown>;
+    if (overrides.adapter) config.adapter = overrides.adapter as string;
+    if (overrides.target_phone_number)
+      config.target_phone_number = overrides.target_phone_number as string;
+    if (overrides.voice)
+      config.voice = { ...config.voice, ...(overrides.voice as typeof config.voice) };
+  }
   const suite = loadScenarios(WORK_DIR, config.suite);
   console.log(`Loaded suite: ${suite.name} (${suite.scenarios.length} scenarios)`);
 
-  // Install dependencies and start agent
-  console.log("Installing dependencies...");
-  execSync("npm install", { cwd: WORK_DIR, stdio: "inherit" });
+  // For remote agents (SIP/WebRTC), skip local agent startup
+  const isRemoteAgent =
+    config.adapter === "sip" || config.adapter === "webrtc";
 
-  console.log("Starting agent...");
-  const startCmd = config.start_command ?? "npm run start";
-  const agentProcess = require("node:child_process").spawn(
-    startCmd.split(" ")[0]!,
-    startCmd.split(" ").slice(1),
-    {
-      cwd: WORK_DIR,
-      stdio: "pipe",
-      env: { ...process.env, PORT: "3001" },
-      shell: true,
-    }
-  );
+  let agentProcess: ChildProcess | null = null;
 
-  const agentUrl = config.agent_url ?? "http://localhost:3001";
-  const healthEndpoint = config.health_endpoint ?? "/health";
+  if (!isRemoteAgent) {
+    // Install dependencies and start agent
+    console.log("Installing dependencies...");
+    execSync("npm install", { cwd: WORK_DIR, stdio: "inherit" });
 
-  try {
-    // Wait for agent to be ready
+    console.log("Starting agent...");
+    const startCmd = config.start_command ?? "npm run start";
+    agentProcess = require("node:child_process").spawn(
+      startCmd.split(" ")[0]!,
+      startCmd.split(" ").slice(1),
+      {
+        cwd: WORK_DIR,
+        stdio: "pipe",
+        env: { ...process.env, PORT: "3001" },
+        shell: true,
+      }
+    );
+
+    const agentUrl = config.agent_url ?? "http://localhost:3001";
+    const healthEndpoint = config.health_endpoint ?? "/health";
+
     console.log("Waiting for agent health...");
     await waitForHealth(`${agentUrl}${healthEndpoint}`);
     console.log("Agent is ready");
+  } else {
+    console.log(`Using remote agent (${config.adapter} adapter)`);
+  }
 
+  try {
     // Execute scenarios
-    const adapter = createAdapter(config.adapter ?? "http", agentUrl);
-    const results = await executeScenarios(suite, adapter);
+    const adapter = createAdapter(config);
+    const results = await executeScenarios(suite, adapter, runId);
+
+    // Disconnect voice adapters if they have a disconnect method
+    if ("disconnect" in adapter && typeof adapter.disconnect === "function") {
+      await (adapter as { disconnect: () => Promise<void> }).disconnect();
+    }
 
     // Report results
     await reportResults(runId, results);
     console.log(`Run ${runId} complete`);
   } finally {
-    agentProcess.kill("SIGTERM");
+    agentProcess?.kill("SIGTERM");
   }
 }
 

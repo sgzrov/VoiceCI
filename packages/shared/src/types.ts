@@ -37,6 +37,9 @@ export interface ScenarioMetrics {
   flow_completion_score: number;
   token_usage: number | null;
   cost_usd: number | null;
+  // Voice metrics (populated when using voice adapters)
+  mean_turn_gap_ms?: number;
+  mean_stt_confidence?: number;
 }
 
 export interface AggregateMetrics {
@@ -49,6 +52,9 @@ export interface AggregateMetrics {
   total_duration_ms: number;
   total_token_usage: number | null;
   total_cost_usd: number | null;
+  // Voice aggregate metrics (populated when using voice adapters)
+  mean_turn_gap_ms?: number;
+  mean_stt_confidence?: number;
 }
 
 export interface TraceEntry {
@@ -56,6 +62,11 @@ export interface TraceEntry {
   text: string;
   timestamp_ms: number;
   latency_ms?: number;
+  // Voice trace fields
+  audio_ref?: string;
+  audio_duration_ms?: number;
+  stt_confidence?: number;
+  time_to_first_byte_ms?: number;
 }
 
 export interface Failure {
@@ -94,12 +105,33 @@ export interface Expectations {
   max_latency_ms?: number;
   must_mention_keywords?: string[];
   interruption_expected?: boolean;
+  // Voice expectations
+  max_turn_gap_ms?: number;
+  min_stt_confidence?: number;
 }
 
 export interface Suite {
   id: string;
   name: string;
   scenarios: Scenario[];
+}
+
+export interface VoiceConfig {
+  tts?: { voice_id?: string; api_key_env?: string };
+  stt?: { api_key_env?: string };
+  audio?: { sample_rate?: number };
+  silence_threshold_ms?: number;
+  telephony?: {
+    auth_id_env?: string;
+    auth_token_env?: string;
+    from_number?: string;
+  };
+  webrtc?: {
+    livekit_url_env?: string;
+    api_key_env?: string;
+    api_secret_env?: string;
+    room?: string;
+  };
 }
 
 export interface VoiceCIConfig {
@@ -110,6 +142,8 @@ export interface VoiceCIConfig {
   start_command?: string;
   adapter?: string;
   timeout_ms?: number;
+  target_phone_number?: string;
+  voice?: VoiceConfig;
 }
 
 export interface PresignResponse {

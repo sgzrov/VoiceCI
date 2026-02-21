@@ -1,11 +1,4 @@
-export interface AgentAdapter {
-  sendMessage(text: string): Promise<AgentResponse>;
-}
-
-export interface AgentResponse {
-  text: string;
-  latency_ms: number;
-}
+import type { AgentAdapter, AgentResponse } from "./types.js";
 
 export class HttpAdapter implements AgentAdapter {
   private baseUrl: string;

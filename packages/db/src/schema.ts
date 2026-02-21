@@ -65,6 +65,8 @@ export const apiKeys = pgTable("api_keys", {
   id: uuid("id").primaryKey().defaultRandom(),
   key_hash: text("key_hash").notNull().unique(),
   name: text("name").notNull(),
+  prefix: text("prefix").notNull().default(""),
+  revoked_at: timestamp("revoked_at", { withTimezone: true }),
   created_at: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),

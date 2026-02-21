@@ -6,8 +6,10 @@ WORKDIR /app
 COPY pnpm-workspace.yaml package.json pnpm-lock.yaml* .npmrc ./
 COPY packages/shared/package.json packages/shared/package.json
 COPY packages/config/package.json packages/config/package.json
+COPY packages/voice/package.json packages/voice/package.json
 COPY packages/scenarios/package.json packages/scenarios/package.json
 COPY packages/adapters/package.json packages/adapters/package.json
+COPY packages/artifacts/package.json packages/artifacts/package.json
 COPY packages/metrics/package.json packages/metrics/package.json
 COPY apps/runner/package.json apps/runner/package.json
 RUN pnpm install --frozen-lockfile
@@ -17,8 +19,10 @@ COPY demo demo
 COPY tsconfig.json tsconfig.json
 RUN pnpm --filter @voiceci/shared build
 RUN pnpm --filter @voiceci/config build
+RUN pnpm --filter @voiceci/voice build
 RUN pnpm --filter @voiceci/scenarios build
 RUN pnpm --filter @voiceci/adapters build
+RUN pnpm --filter @voiceci/artifacts build
 RUN pnpm --filter @voiceci/metrics build
 RUN pnpm --filter @voiceci/runner build
 

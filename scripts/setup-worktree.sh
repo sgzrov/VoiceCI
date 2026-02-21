@@ -3,41 +3,55 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-ENV_SOURCE="$HOME/.config/voiceci/.env.local"
+ENV_LOCAL_SOURCE="$HOME/.config/voiceci/.env.local"
+ENV_SOURCE="$HOME/.config/voiceci/.env"
 
 cd "$PROJECT_ROOT"
 
 echo "==> Setting up VoiceCI worktree in $PROJECT_ROOT"
 
-# ── 1. .env.local ───────────────────────────────────────────────────────────
+# ── 1. Copy env files ─────────────────────────────────────────────────────────
 
-if [ -f ".env.local" ]; then
-  echo "    .env.local already exists, skipping"
-else
+copy_env_file() {
+  local filename="$1"
+  local fallback="$2"
+
+  if [ -f "$filename" ]; then
+    echo "    $filename already exists, skipping"
+    return
+  fi
+
   # Try to copy from another worktree first
-  COPIED=false
+  local copied=false
   while IFS= read -r line; do
-    WT_PATH="$(echo "$line" | awk '{print $1}')"
-    if [ "$WT_PATH" != "$PROJECT_ROOT" ] && [ -f "$WT_PATH/.env.local" ]; then
-      cp "$WT_PATH/.env.local" .env.local
-      echo "    Copied .env.local from $WT_PATH"
-      COPIED=true
+    local wt_path
+    wt_path="$(echo "$line" | awk '{print $1}')"
+    if [ "$wt_path" != "$PROJECT_ROOT" ] && [ -f "$wt_path/$filename" ]; then
+      cp "$wt_path/$filename" "$filename"
+      echo "    Copied $filename from $wt_path"
+      copied=true
       break
     fi
   done < <(git worktree list 2>/dev/null || true)
 
   # Fall back to centralized env file
-  if [ "$COPIED" = false ]; then
-    if [ -f "$ENV_SOURCE" ]; then
-      cp "$ENV_SOURCE" .env.local
-      echo "    Copied .env.local from $ENV_SOURCE"
-    else
+  if [ "$copied" = false ]; then
+    if [ -f "$fallback" ]; then
+      cp "$fallback" "$filename"
+      echo "    Copied $filename from $fallback"
+    elif [ "$filename" = ".env.local" ]; then
       echo "    ERROR: No .env.local found."
-      echo "    Create one at $ENV_SOURCE with your secrets, then re-run this script."
+      echo "    Create one at $fallback with your secrets, then re-run this script."
       exit 1
+    else
+      cp .env.example "$filename"
+      echo "    Created $filename from .env.example (fill in your secrets)"
     fi
   fi
-fi
+}
+
+copy_env_file ".env.local" "$ENV_LOCAL_SOURCE"
+copy_env_file ".env" "$ENV_SOURCE"
 
 # ── 2. Install dependencies ─────────────────────────────────────────────────
 
@@ -57,6 +71,27 @@ if [ ! -d ".context" ]; then
   echo "    Created .context/ directory"
 else
   echo "    .context/ already exists, skipping"
+fi
+
+# ── 5. Check voice testing env vars ────────────────────────────────────────
+
+echo "==> Checking voice testing keys..."
+VOICE_MISSING=()
+for key in ELEVENLABS_API_KEY DEEPGRAM_API_KEY; do
+  val="$(grep "^${key}=" .env 2>/dev/null | cut -d= -f2-)"
+  if [ -z "$val" ]; then
+    VOICE_MISSING+=("$key")
+  fi
+done
+
+if [ ${#VOICE_MISSING[@]} -gt 0 ]; then
+  echo "    Missing voice keys in .env (needed for voice adapters):"
+  for key in "${VOICE_MISSING[@]}"; do
+    echo "      - $key"
+  done
+  echo "    Voice testing will not work until these are set."
+else
+  echo "    Core voice keys present (ElevenLabs, Deepgram)"
 fi
 
 echo ""

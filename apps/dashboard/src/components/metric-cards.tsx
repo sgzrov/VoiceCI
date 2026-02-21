@@ -42,6 +42,24 @@ export function MetricCards({ metrics }: MetricCardsProps) {
           },
         ]
       : []),
+    ...(metrics["mean_turn_gap_ms"] !== undefined
+      ? [
+          {
+            label: "Mean Turn Gap",
+            value: `${metrics["mean_turn_gap_ms"]}ms`,
+            sub: null,
+          },
+        ]
+      : []),
+    ...(metrics["mean_stt_confidence"] !== undefined
+      ? [
+          {
+            label: "Voice Clarity",
+            value: String(metrics["mean_stt_confidence"]),
+            sub: "STT confidence",
+          },
+        ]
+      : []),
   ];
 
   return (

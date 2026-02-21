@@ -42,6 +42,12 @@ export default function RootLayout({
                   </div>
                 </div>
               </div>
+              <Link
+                href="/settings/keys"
+                className="text-sm text-muted-foreground hover:text-foreground transition-colors"
+              >
+                Settings
+              </Link>
             </div>
           </nav>
           <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">

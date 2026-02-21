@@ -13,7 +13,8 @@
     "@voiceci/scenarios": "workspace:*",
     "@voiceci/adapters": "workspace:*",
     "@voiceci/metrics": "workspace:*",
-    "@voiceci/config": "workspace:*"
+    "@voiceci/config": "workspace:*",
+    "@voiceci/artifacts": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.7.0"

@@ -58,8 +58,25 @@ export async function mcpRoutes(app: FastifyInstance) {
         .enum(["smoke", "ci", "deep"])
         .optional()
         .describe("Test mode (default: smoke)"),
+      adapter: z
+        .enum(["http", "ws-voice", "sip", "webrtc"])
+        .optional()
+        .describe("Adapter type — overrides voiceci.config.json (default: http)"),
+      target_phone_number: z
+        .string()
+        .optional()
+        .describe("Phone number for SIP adapter (required when adapter is sip)"),
+      voice: z
+        .object({
+          tts: z.object({ voice_id: z.string().optional() }).optional(),
+          stt: z.object({ api_key_env: z.string().optional() }).optional(),
+          silence_threshold_ms: z.number().optional(),
+          webrtc: z.object({ room: z.string().optional() }).optional(),
+        })
+        .optional()
+        .describe("Voice adapter configuration — overrides bundle config"),
     },
-    async ({ bundle_key, bundle_hash, mode }) => {
+    async ({ bundle_key, bundle_hash, mode, adapter, target_phone_number, voice }) => {
       const [run] = await app.db
         .insert(schema.runs)
         .values({
@@ -70,11 +87,16 @@ export async function mcpRoutes(app: FastifyInstance) {
         })
         .returning();
 
+      const voiceConfig = adapter || target_phone_number || voice
+        ? { adapter, target_phone_number, voice }
+        : undefined;
+
       await app.runQueue.add("execute-run", {
         run_id: run!.id,
         bundle_key,
         bundle_hash,
         mode: mode ?? "smoke",
+        voice_config: voiceConfig,
       });
 
       return {

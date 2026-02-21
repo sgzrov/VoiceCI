@@ -21,6 +21,8 @@ export const ScenarioMetricsSchema = z.object({
   flow_completion_score: z.number(),
   token_usage: z.number().nullable(),
   cost_usd: z.number().nullable(),
+  mean_turn_gap_ms: z.number().optional(),
+  mean_stt_confidence: z.number().optional(),
 });
 
 export const TraceEntrySchema = z.object({
@@ -28,6 +30,10 @@ export const TraceEntrySchema = z.object({
   text: z.string(),
   timestamp_ms: z.number(),
   latency_ms: z.number().optional(),
+  audio_ref: z.string().optional(),
+  audio_duration_ms: z.number().optional(),
+  stt_confidence: z.number().optional(),
+  time_to_first_byte_ms: z.number().optional(),
 });
 
 export const ScenarioResultPayloadSchema = z.object({
@@ -63,6 +69,8 @@ export const ExpectationsSchema = z.object({
   max_latency_ms: z.number().positive().optional(),
   must_mention_keywords: z.array(z.string()).optional(),
   interruption_expected: z.boolean().optional(),
+  max_turn_gap_ms: z.number().positive().optional(),
+  min_stt_confidence: z.number().min(0).max(1).optional(),
 });
 
 export const ScenarioSchema = z.object({

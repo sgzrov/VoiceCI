@@ -48,6 +48,26 @@ export function computeScenarioMetrics(
   const flowCompletion =
     userMessages.length > 0 ? answeredCount / userMessages.length : 0;
 
+  // Voice metrics
+  const turnGaps = agentEntries
+    .map((e) => e.time_to_first_byte_ms)
+    .filter((t): t is number => t !== undefined);
+  const meanTurnGap =
+    turnGaps.length > 0
+      ? Math.round(turnGaps.reduce((a, b) => a + b, 0) / turnGaps.length)
+      : undefined;
+
+  const sttConfidences = agentEntries
+    .map((e) => e.stt_confidence)
+    .filter((c): c is number => c !== undefined);
+  const meanSttConfidence =
+    sttConfidences.length > 0
+      ? Math.round(
+          (sttConfidences.reduce((a, b) => a + b, 0) / sttConfidences.length) *
+            100
+        ) / 100
+      : undefined;
+
   const metrics: ScenarioMetrics = {
     mean_latency_ms: mean,
     p95_latency_ms: p95,
@@ -57,6 +77,8 @@ export function computeScenarioMetrics(
     flow_completion_score: Math.round(flowCompletion * 100) / 100,
     token_usage: null,
     cost_usd: null,
+    mean_turn_gap_ms: meanTurnGap,
+    mean_stt_confidence: meanSttConfidence,
   };
 
   const failures: Failure[] = [];
@@ -100,6 +122,34 @@ export function computeScenarioMetrics(
         });
       }
     }
+  }
+
+  if (
+    expectations.max_turn_gap_ms !== undefined &&
+    meanTurnGap !== undefined &&
+    meanTurnGap > expectations.max_turn_gap_ms
+  ) {
+    failures.push({
+      code: "TURN_GAP_EXCEEDED",
+      message: `Mean turn gap ${meanTurnGap}ms exceeded threshold ${expectations.max_turn_gap_ms}ms`,
+      actual: meanTurnGap,
+      expected: expectations.max_turn_gap_ms,
+      scenario: "",
+    });
+  }
+
+  if (
+    expectations.min_stt_confidence !== undefined &&
+    meanSttConfidence !== undefined &&
+    meanSttConfidence < expectations.min_stt_confidence
+  ) {
+    failures.push({
+      code: "LOW_VOICE_CLARITY",
+      message: `Mean STT confidence ${meanSttConfidence} below minimum ${expectations.min_stt_confidence}`,
+      actual: meanSttConfidence,
+      expected: expectations.min_stt_confidence,
+      scenario: "",
+    });
   }
 
   return {
@@ -150,6 +200,14 @@ export function aggregateRunMetrics(
     .map((m) => m.cost_usd)
     .filter((c): c is number => c !== null);
 
+  // Voice aggregate metrics
+  const turnGaps = scenarioMetrics
+    .map((m) => m.mean_turn_gap_ms)
+    .filter((t): t is number => t !== undefined);
+  const sttConfs = scenarioMetrics
+    .map((m) => m.mean_stt_confidence)
+    .filter((c): c is number => c !== undefined);
+
   return {
     total_scenarios: scenarioMetrics.length,
     passed: 0, // caller fills this in
@@ -164,5 +222,13 @@ export function aggregateRunMetrics(
     total_cost_usd: costs.length > 0
       ? Math.round(costs.reduce((a, b) => a + b, 0) * 10000) / 10000
       : null,
+    mean_turn_gap_ms: turnGaps.length > 0
+      ? Math.round(turnGaps.reduce((a, b) => a + b, 0) / turnGaps.length)
+      : undefined,
+    mean_stt_confidence: sttConfs.length > 0
+      ? Math.round(
+          (sttConfs.reduce((a, b) => a + b, 0) / sttConfs.length) * 100
+        ) / 100
+      : undefined,
   };
 }

@@ -41,6 +41,10 @@ interface TraceEntry {
   text: string;
   timestamp_ms: number;
   latency_ms?: number;
+  audio_ref?: string;
+  audio_duration_ms?: number;
+  stt_confidence?: number;
+  time_to_first_byte_ms?: number;
 }
 
 interface Artifact {

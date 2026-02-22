@@ -20,6 +20,8 @@ export const sourceTypeEnum = pgEnum("source_type", ["bundle"]);
 
 export const scenarioStatusEnum = pgEnum("scenario_status", ["pass", "fail"]);
 
+export const testTypeEnum = pgEnum("test_type", ["audio", "conversation"]);
+
 export const runs = pgTable("runs", {
   id: uuid("id").primaryKey().defaultRandom(),
   status: runStatusEnum("status").notNull().default("queued"),
@@ -33,6 +35,7 @@ export const runs = pgTable("runs", {
   finished_at: timestamp("finished_at", { withTimezone: true }),
   duration_ms: integer("duration_ms"),
   aggregate_json: jsonb("aggregate_json"),
+  test_spec_json: jsonb("test_spec_json"),
   error_text: text("error_text"),
 });
 
@@ -43,6 +46,7 @@ export const scenarioResults = pgTable("scenario_results", {
     .references(() => runs.id, { onDelete: "cascade" }),
   name: text("name").notNull(),
   status: scenarioStatusEnum("status").notNull(),
+  test_type: testTypeEnum("test_type"),
   metrics_json: jsonb("metrics_json").notNull(),
   trace_json: jsonb("trace_json").notNull(),
   trace_ref: text("trace_ref"),

@@ -1,21 +1,23 @@
 import { execSync, type ChildProcess } from "node:child_process";
-import { mkdirSync, existsSync } from "node:fs";
-import { loadConfig } from "@voiceci/config";
-import { loadScenarios } from "@voiceci/scenarios";
-import { createAdapter } from "@voiceci/adapters";
-import { executeScenarios } from "./executor.js";
-import { waitForHealth } from "./health-check.js";
+import { mkdirSync, writeFileSync } from "node:fs";
+import type { TestSpec, AudioTestResult, ConversationTestResult, RunAggregateV2, AdapterType, VoiceConfig } from "@voiceci/shared";
+import { createAudioChannel, type AudioChannelConfig } from "@voiceci/adapters";
+import { runAudioTest } from "./audio-tests/index.js";
+import { runConversationTest } from "./conversation/index.js";
 import { reportResults } from "./reporter.js";
+import { waitForHealth } from "./health-check.js";
 
 const WORK_DIR = "/work";
 
 async function main() {
   const runId = requireEnv("RUN_ID");
   const bundleDownloadUrl = requireEnv("BUNDLE_DOWNLOAD_URL");
+  const testSpec = JSON.parse(requireEnv("TEST_SPEC_JSON")) as TestSpec;
+  const adapterType = (process.env["ADAPTER_TYPE"] ?? "ws-voice") as AdapterType;
 
   console.log(`Runner starting for run ${runId}`);
 
-  // Download and extract bundle using presigned URL from worker
+  // Download and extract bundle
   mkdirSync(WORK_DIR, { recursive: true });
 
   console.log("Downloading bundle...");
@@ -25,39 +27,30 @@ async function main() {
   }
 
   const arrayBuffer = await response.arrayBuffer();
-  const { writeFileSync } = await import("node:fs");
   writeFileSync("/tmp/bundle.tar.gz", Buffer.from(arrayBuffer));
 
   console.log("Extracting bundle...");
   execSync(`tar -xzf /tmp/bundle.tar.gz -C ${WORK_DIR}`, { stdio: "inherit" });
 
-  // Load config and scenarios, merging MCP voice overrides if provided
-  const config = loadConfig(WORK_DIR);
+  // Parse voice config from env
+  let voiceConfig: VoiceConfig | undefined;
   const voiceConfigJson = process.env["VOICE_CONFIG_JSON"];
   if (voiceConfigJson) {
-    const overrides = JSON.parse(voiceConfigJson) as Record<string, unknown>;
-    if (overrides.adapter) config.adapter = overrides.adapter as string;
-    if (overrides.target_phone_number)
-      config.target_phone_number = overrides.target_phone_number as string;
-    if (overrides.voice)
-      config.voice = { ...config.voice, ...(overrides.voice as typeof config.voice) };
+    const parsed = JSON.parse(voiceConfigJson) as Record<string, unknown>;
+    voiceConfig = (parsed.voice as VoiceConfig) ?? undefined;
   }
-  const suite = loadScenarios(WORK_DIR, config.suite);
-  console.log(`Loaded suite: ${suite.name} (${suite.scenarios.length} scenarios)`);
 
   // For remote agents (SIP/WebRTC), skip local agent startup
-  const isRemoteAgent =
-    config.adapter === "sip" || config.adapter === "webrtc";
-
+  const isRemoteAgent = adapterType === "sip" || adapterType === "webrtc";
   let agentProcess: ChildProcess | null = null;
+  const agentUrl = process.env["AGENT_URL"] ?? "http://localhost:3001";
 
   if (!isRemoteAgent) {
-    // Install dependencies and start agent
     console.log("Installing dependencies...");
     execSync("npm install", { cwd: WORK_DIR, stdio: "inherit" });
 
     console.log("Starting agent...");
-    const startCmd = config.start_command ?? "npm run start";
+    const startCmd = process.env["START_COMMAND"] ?? "npm run start";
     agentProcess = require("node:child_process").spawn(
       startCmd.split(" ")[0]!,
       startCmd.split(" ").slice(1),
@@ -69,29 +62,96 @@ async function main() {
       }
     );
 
-    const agentUrl = config.agent_url ?? "http://localhost:3001";
-    const healthEndpoint = config.health_endpoint ?? "/health";
-
+    const healthEndpoint = process.env["HEALTH_ENDPOINT"] ?? "/health";
     console.log("Waiting for agent health...");
     await waitForHealth(`${agentUrl}${healthEndpoint}`);
     console.log("Agent is ready");
   } else {
-    console.log(`Using remote agent (${config.adapter} adapter)`);
+    console.log(`Using remote agent (${adapterType} adapter)`);
   }
 
-  try {
-    // Execute scenarios
-    const adapter = createAdapter(config);
-    const results = await executeScenarios(suite, adapter, runId);
+  const channelConfig: AudioChannelConfig = {
+    adapter: adapterType,
+    agentUrl,
+    targetPhoneNumber: process.env["TARGET_PHONE_NUMBER"],
+    voice: voiceConfig,
+  };
 
-    // Disconnect voice adapters if they have a disconnect method
-    if ("disconnect" in adapter && typeof adapter.disconnect === "function") {
-      await (adapter as { disconnect: () => Promise<void> }).disconnect();
+  const audioResults: AudioTestResult[] = [];
+  const conversationResults: ConversationTestResult[] = [];
+
+  try {
+    // Run audio tests
+    if (testSpec.audio_tests && testSpec.audio_tests.length > 0) {
+      console.log(`Running ${testSpec.audio_tests.length} audio tests...`);
+      for (const testName of testSpec.audio_tests) {
+        console.log(`  Audio test: ${testName}`);
+        const channel = createAudioChannel(channelConfig);
+        try {
+          await channel.connect();
+          const result = await runAudioTest(testName, channel);
+          audioResults.push(result);
+          console.log(`    ${testName}: ${result.status} (${result.duration_ms}ms)`);
+        } finally {
+          await channel.disconnect().catch(() => {});
+        }
+      }
     }
 
-    // Report results
-    await reportResults(runId, results);
-    console.log(`Run ${runId} complete`);
+    // Run conversation tests
+    if (testSpec.conversation_tests && testSpec.conversation_tests.length > 0) {
+      console.log(`Running ${testSpec.conversation_tests.length} conversation tests...`);
+      for (const spec of testSpec.conversation_tests) {
+        console.log(`  Conversation: ${spec.caller_prompt.slice(0, 60)}...`);
+        const channel = createAudioChannel(channelConfig);
+        try {
+          await channel.connect();
+          const result = await runConversationTest(spec, channel);
+          conversationResults.push(result);
+          console.log(`    Status: ${result.status} (${result.duration_ms}ms)`);
+        } finally {
+          await channel.disconnect().catch(() => {});
+        }
+      }
+    }
+
+    // Aggregate results
+    const audioPassed = audioResults.filter((r) => r.status === "pass").length;
+    const audioFailed = audioResults.filter((r) => r.status === "fail").length;
+    const convPassed = conversationResults.filter((r) => r.status === "pass").length;
+    const convFailed = conversationResults.filter((r) => r.status === "fail").length;
+
+    const totalDurationMs =
+      audioResults.reduce((sum, r) => sum + r.duration_ms, 0) +
+      conversationResults.reduce((sum, r) => sum + r.duration_ms, 0);
+
+    const aggregate: RunAggregateV2 = {
+      audio_tests: {
+        total: audioResults.length,
+        passed: audioPassed,
+        failed: audioFailed,
+      },
+      conversation_tests: {
+        total: conversationResults.length,
+        passed: convPassed,
+        failed: convFailed,
+      },
+      total_duration_ms: totalDurationMs,
+    };
+
+    const overallStatus = audioFailed + convFailed === 0 ? "pass" : "fail";
+
+    console.log(
+      `Run complete: ${overallStatus} (audio: ${audioPassed}/${audioResults.length}, conversation: ${convPassed}/${conversationResults.length})`
+    );
+
+    await reportResults({
+      run_id: runId,
+      status: overallStatus,
+      audio_results: audioResults,
+      conversation_results: conversationResults,
+      aggregate,
+    });
   } finally {
     agentProcess?.kill("SIGTERM");
   }

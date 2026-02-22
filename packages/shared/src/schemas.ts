@@ -1,94 +1,86 @@
 import { z } from "zod";
-import { RUN_MODES, RUN_STATUSES, SCENARIO_STATUSES, SOURCE_TYPES } from "./constants.js";
+import { AUDIO_TEST_NAMES } from "./types.js";
 
-export const PresignRequestSchema = z.object({
-  filename: z.string().optional(),
+// ============================================================
+// V2 Schemas — Dynamic voice agent testing
+// ============================================================
+
+export const AudioTestNameSchema = z.enum(AUDIO_TEST_NAMES);
+
+export const ConversationTestSpecSchema = z.object({
+  caller_prompt: z.string().min(1),
+  max_turns: z.number().int().min(1).max(50).default(10),
+  eval: z.array(z.string().min(1)).min(1),
 });
 
-export const CreateRunSchema = z.object({
-  source_type: z.enum(SOURCE_TYPES),
-  bundle_key: z.string().min(1),
-  bundle_hash: z.string().min(1),
-  mode: z.enum(RUN_MODES).optional(),
-});
+export const TestSpecSchema = z
+  .object({
+    audio_tests: z.array(AudioTestNameSchema).optional(),
+    conversation_tests: z.array(ConversationTestSpecSchema).optional(),
+  })
+  .refine(
+    (d) => (d.audio_tests?.length ?? 0) + (d.conversation_tests?.length ?? 0) > 0,
+    { message: "At least one audio_test or conversation_test is required" }
+  );
 
-export const ScenarioMetricsSchema = z.object({
-  mean_latency_ms: z.number(),
-  p95_latency_ms: z.number(),
-  max_latency_ms: z.number(),
-  duration_ms: z.number(),
-  empty_response_count: z.number(),
-  flow_completion_score: z.number(),
-  token_usage: z.number().nullable(),
-  cost_usd: z.number().nullable(),
-  mean_turn_gap_ms: z.number().optional(),
-  mean_stt_confidence: z.number().optional(),
-});
+export const AdapterTypeSchema = z.enum(["ws-voice", "sip", "webrtc"]);
 
-export const TraceEntrySchema = z.object({
-  role: z.enum(["user", "agent"]),
+export const ConversationTurnSchema = z.object({
+  role: z.enum(["caller", "agent"]),
   text: z.string(),
   timestamp_ms: z.number(),
-  latency_ms: z.number().optional(),
-  audio_ref: z.string().optional(),
   audio_duration_ms: z.number().optional(),
-  stt_confidence: z.number().optional(),
-  time_to_first_byte_ms: z.number().optional(),
 });
 
-export const ScenarioResultPayloadSchema = z.object({
-  name: z.string(),
-  status: z.enum(SCENARIO_STATUSES),
-  metrics: ScenarioMetricsSchema,
-  trace: z.array(TraceEntrySchema),
-  trace_ref: z.string().optional(),
+export const EvalResultSchema = z.object({
+  question: z.string(),
+  relevant: z.boolean(),
+  passed: z.boolean(),
+  reasoning: z.string(),
 });
 
-export const AggregateMetricsSchema = z.object({
-  total_scenarios: z.number(),
-  passed: z.number(),
-  failed: z.number(),
-  mean_latency_ms: z.number(),
-  p95_latency_ms: z.number(),
-  max_latency_ms: z.number(),
+export const ConversationMetricsSchema = z.object({
+  turns: z.number(),
+  mean_ttfb_ms: z.number(),
   total_duration_ms: z.number(),
-  total_token_usage: z.number().nullable(),
-  total_cost_usd: z.number().nullable(),
 });
 
-export const RunnerCallbackSchema = z.object({
+export const AudioTestResultSchema = z.object({
+  test_name: AudioTestNameSchema,
+  status: z.enum(["pass", "fail"]),
+  metrics: z.record(z.union([z.number(), z.boolean()])),
+  duration_ms: z.number(),
+  error: z.string().optional(),
+});
+
+export const ConversationTestResultSchema = z.object({
+  caller_prompt: z.string(),
+  status: z.enum(["pass", "fail"]),
+  transcript: z.array(ConversationTurnSchema),
+  eval_results: z.array(EvalResultSchema),
+  duration_ms: z.number(),
+  metrics: ConversationMetricsSchema,
+});
+
+export const RunAggregateV2Schema = z.object({
+  audio_tests: z.object({
+    total: z.number(),
+    passed: z.number(),
+    failed: z.number(),
+  }),
+  conversation_tests: z.object({
+    total: z.number(),
+    passed: z.number(),
+    failed: z.number(),
+  }),
+  total_duration_ms: z.number(),
+});
+
+export const RunnerCallbackV2Schema = z.object({
   run_id: z.string().uuid(),
   status: z.enum(["pass", "fail"]),
-  scenario_results: z.array(ScenarioResultPayloadSchema),
-  aggregate: AggregateMetricsSchema,
+  audio_results: z.array(AudioTestResultSchema),
+  conversation_results: z.array(ConversationTestResultSchema),
+  aggregate: RunAggregateV2Schema,
   error_text: z.string().optional(),
-});
-
-export const ExpectationsSchema = z.object({
-  flow_completion_min: z.number().min(0).max(1).optional(),
-  max_latency_ms: z.number().positive().optional(),
-  must_mention_keywords: z.array(z.string()).optional(),
-  interruption_expected: z.boolean().optional(),
-  max_turn_gap_ms: z.number().positive().optional(),
-  min_stt_confidence: z.number().min(0).max(1).optional(),
-});
-
-export const ScenarioSchema = z.object({
-  id: z.string(),
-  name: z.string(),
-  user_script: z.array(z.string()).min(1),
-  expectations: ExpectationsSchema,
-});
-
-export const SuiteSchema = z.object({
-  id: z.string(),
-  name: z.string(),
-  scenarios: z.array(ScenarioSchema).min(1),
-});
-
-export const McpRequestSchema = z.object({
-  jsonrpc: z.literal("2.0"),
-  id: z.union([z.string(), z.number()]),
-  method: z.string(),
-  params: z.record(z.unknown()).optional(),
 });

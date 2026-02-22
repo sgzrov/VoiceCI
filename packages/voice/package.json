@@ -5,7 +5,7 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && cp -r src/ten-vad dist/ten-vad",
     "clean": "rm -rf dist"
   },
   "dependencies": {

@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { eq } from "drizzle-orm";
 import { schema } from "@voiceci/db";
-import { RunnerCallbackSchema, RUNNER_CALLBACK_HEADER } from "@voiceci/shared";
+import { RunnerCallbackV2Schema, RUNNER_CALLBACK_HEADER } from "@voiceci/shared";
 
 export async function callbackRoutes(app: FastifyInstance) {
   app.post("/internal/runner-callback", async (request, reply) => {
@@ -12,7 +12,7 @@ export async function callbackRoutes(app: FastifyInstance) {
       return reply.status(401).send({ error: "Unauthorized" });
     }
 
-    const body = RunnerCallbackSchema.parse(request.body);
+    const body = RunnerCallbackV2Schema.parse(request.body);
 
     await app.db
       .update(schema.runs)
@@ -25,14 +25,27 @@ export async function callbackRoutes(app: FastifyInstance) {
       })
       .where(eq(schema.runs.id, body.run_id));
 
-    for (const result of body.scenario_results) {
+    // Store audio test results
+    for (const result of body.audio_results) {
       await app.db.insert(schema.scenarioResults).values({
         run_id: body.run_id,
-        name: result.name,
+        name: result.test_name,
         status: result.status,
-        metrics_json: result.metrics,
-        trace_json: result.trace,
-        trace_ref: result.trace_ref ?? null,
+        test_type: "audio",
+        metrics_json: result,
+        trace_json: [],
+      });
+    }
+
+    // Store conversation test results
+    for (const result of body.conversation_results) {
+      await app.db.insert(schema.scenarioResults).values({
+        run_id: body.run_id,
+        name: `conversation:${result.caller_prompt.slice(0, 50)}`,
+        status: result.status,
+        test_type: "conversation",
+        metrics_json: result,
+        trace_json: result.transcript,
       });
     }
 

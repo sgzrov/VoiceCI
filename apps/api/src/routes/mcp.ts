@@ -4,13 +4,14 @@ import { randomUUID } from "node:crypto";
 import { schema } from "@voiceci/db";
 import { createStorageClient } from "@voiceci/artifacts";
 import { z } from "zod";
+import { AudioTestNameSchema, ConversationTestSpecSchema, AdapterTypeSchema } from "@voiceci/shared";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 
 export async function mcpRoutes(app: FastifyInstance) {
   const mcpServer = new McpServer({
     name: "voiceci",
-    version: "0.0.1",
+    version: "0.2.0",
   });
 
   // --- Tool: prepare_upload ---
@@ -50,18 +51,25 @@ export async function mcpRoutes(app: FastifyInstance) {
   // --- Tool: run_tests ---
   mcpServer.tool(
     "run_tests",
-    "Start a VoiceCI test run against an uploaded voice agent bundle",
+    "Start a VoiceCI test run against an uploaded voice agent bundle. Specify audio_tests for infrastructure checks and/or conversation_tests for behavioral checks.",
     {
       bundle_key: z.string().describe("The bundle key returned by prepare_upload"),
       bundle_hash: z.string().describe("SHA-256 hash of the uploaded bundle"),
-      mode: z
-        .enum(["smoke", "ci", "deep"])
+      adapter: AdapterTypeSchema.describe(
+        "Transport adapter: ws-voice (WebSocket), sip (phone call via Plivo), or webrtc (LiveKit)"
+      ),
+      audio_tests: z
+        .array(AudioTestNameSchema)
         .optional()
-        .describe("Test mode (default: smoke)"),
-      adapter: z
-        .enum(["http", "ws-voice", "sip", "webrtc"])
+        .describe(
+          "Prebuilt audio tests to run: echo, barge_in, ttfb, silence_handling, connection_stability, response_completeness"
+        ),
+      conversation_tests: z
+        .array(ConversationTestSpecSchema)
         .optional()
-        .describe("Adapter type — overrides voiceci.config.json (default: http)"),
+        .describe(
+          "Dynamic conversation tests. Each has a caller_prompt (persona/goal), max_turns, and eval (questions to judge the agent on)"
+        ),
       target_phone_number: z
         .string()
         .optional()
@@ -74,9 +82,27 @@ export async function mcpRoutes(app: FastifyInstance) {
           webrtc: z.object({ room: z.string().optional() }).optional(),
         })
         .optional()
-        .describe("Voice adapter configuration — overrides bundle config"),
+        .describe("Voice configuration overrides"),
     },
-    async ({ bundle_key, bundle_hash, mode, adapter, target_phone_number, voice }) => {
+    async ({ bundle_key, bundle_hash, adapter, audio_tests, conversation_tests, target_phone_number, voice }) => {
+      // Validate at least one test type is specified
+      if (
+        (!audio_tests || audio_tests.length === 0) &&
+        (!conversation_tests || conversation_tests.length === 0)
+      ) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: "Error: At least one audio_test or conversation_test is required",
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      const testSpec = { audio_tests, conversation_tests };
+
       const [run] = await app.db
         .insert(schema.runs)
         .values({
@@ -84,19 +110,18 @@ export async function mcpRoutes(app: FastifyInstance) {
           bundle_key,
           bundle_hash,
           status: "queued",
+          test_spec_json: testSpec,
         })
         .returning();
-
-      const voiceConfig = adapter || target_phone_number || voice
-        ? { adapter, target_phone_number, voice }
-        : undefined;
 
       await app.runQueue.add("execute-run", {
         run_id: run!.id,
         bundle_key,
         bundle_hash,
-        mode: mode ?? "smoke",
-        voice_config: voiceConfig,
+        adapter,
+        test_spec: testSpec,
+        target_phone_number,
+        voice_config: voice ? { adapter, target_phone_number, voice } : { adapter, target_phone_number },
       });
 
       return {
@@ -145,7 +170,7 @@ export async function mcpRoutes(app: FastifyInstance) {
   // --- Tool: get_run_result ---
   mcpServer.tool(
     "get_run_result",
-    "Get the full results of a completed VoiceCI test run including scenario details and metrics",
+    "Get the full results of a completed VoiceCI test run including audio test metrics and conversation eval results",
     {
       run_id: z.string().describe("The run ID to get results for"),
     },
@@ -163,42 +188,31 @@ export async function mcpRoutes(app: FastifyInstance) {
         };
       }
 
-      const scenarios = await app.db
+      const testResults = await app.db
         .select()
         .from(schema.scenarioResults)
         .where(eq(schema.scenarioResults.run_id, run_id));
 
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify({ ...run, scenarios }, null, 2),
-          },
-        ],
-      };
-    }
-  );
+      // Separate audio and conversation results by test_type
+      const audioResults = testResults
+        .filter((r) => r.test_type === "audio")
+        .map((r) => r.metrics_json);
+      const conversationResults = testResults
+        .filter((r) => r.test_type === "conversation")
+        .map((r) => r.metrics_json);
 
-  // --- Tool: list_test_suites ---
-  mcpServer.tool(
-    "list_test_suites",
-    "List available VoiceCI test suites",
-    {},
-    async () => {
       return {
         content: [
           {
             type: "text" as const,
             text: JSON.stringify(
               {
-                suites: [
-                  { id: "basic", name: "Basic Suite", path: "demo/suites/basic.json" },
-                  {
-                    id: "interruptions",
-                    name: "Interruptions Suite",
-                    path: "demo/suites/interruptions.json",
-                  },
-                ],
+                run_id: run.id,
+                status: run.status,
+                aggregate: run.aggregate_json,
+                audio_results: audioResults,
+                conversation_results: conversationResults,
+                error_text: run.error_text,
               },
               null,
               2

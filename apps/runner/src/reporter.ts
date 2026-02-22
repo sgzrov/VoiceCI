@@ -1,10 +1,16 @@
 import { RUNNER_CALLBACK_HEADER } from "@voiceci/shared";
-import type { ExecutionResults } from "./executor.js";
+import type { AudioTestResult, ConversationTestResult, RunAggregateV2 } from "@voiceci/shared";
 
-export async function reportResults(
-  runId: string,
-  results: ExecutionResults
-): Promise<void> {
+export interface RunResults {
+  run_id: string;
+  status: "pass" | "fail";
+  audio_results: AudioTestResult[];
+  conversation_results: ConversationTestResult[];
+  aggregate: RunAggregateV2;
+  error_text?: string;
+}
+
+export async function reportResults(results: RunResults): Promise<void> {
   const callbackUrl = process.env["API_CALLBACK_URL"];
   if (!callbackUrl) {
     throw new Error("API_CALLBACK_URL is required");
@@ -12,20 +18,13 @@ export async function reportResults(
 
   const secret = process.env["RUNNER_CALLBACK_SECRET"] ?? "";
 
-  const payload = {
-    run_id: runId,
-    status: results.status,
-    scenario_results: results.scenario_results,
-    aggregate: results.aggregate,
-  };
-
   const response = await fetch(callbackUrl, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       [RUNNER_CALLBACK_HEADER]: secret,
     },
-    body: JSON.stringify(payload),
+    body: JSON.stringify(results),
   });
 
   if (!response.ok) {

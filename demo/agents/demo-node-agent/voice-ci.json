@@ -1,8 +1,18 @@
 {
-  "suite": "./suites/basic.json",
-  "agent_url": "http://localhost:3001",
-  "health_endpoint": "/health",
-  "start_command": "node src/index.js",
-  "adapter": "http",
-  "timeout_ms": 60000
+  "version": "1.0",
+  "agent": {
+    "name": "Demo Support Agent",
+    "description": "A demo customer support agent that handles greetings, appointment booking, and FAQ inquiries for a fictional business. Responds to hello/hi with greetings, booking/appointment/schedule with booking flow, and hours/guarantee/support/contact with FAQ answers.",
+    "language": "en"
+  },
+  "connection": {
+    "adapter": "ws-voice",
+    "start_command": "node src/index.js",
+    "health_endpoint": "/health",
+    "agent_url": "http://localhost:3001"
+  },
+  "testing": {
+    "max_parallel_runs": 20,
+    "default_max_turns": 10
+  }
 }

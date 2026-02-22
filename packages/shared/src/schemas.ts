@@ -8,6 +8,7 @@ import { AUDIO_TEST_NAMES } from "./types.js";
 export const AudioTestNameSchema = z.enum(AUDIO_TEST_NAMES);
 
 export const ConversationTestSpecSchema = z.object({
+  name: z.string().optional(),
   caller_prompt: z.string().min(1),
   max_turns: z.number().int().min(1).max(50).default(10),
   eval: z.array(z.string().min(1)).min(1),
@@ -54,6 +55,7 @@ export const AudioTestResultSchema = z.object({
 });
 
 export const ConversationTestResultSchema = z.object({
+  name: z.string().optional(),
   caller_prompt: z.string(),
   status: z.enum(["pass", "fail"]),
   transcript: z.array(ConversationTurnSchema),
@@ -83,4 +85,39 @@ export const RunnerCallbackV2Schema = z.object({
   conversation_results: z.array(ConversationTestResultSchema),
   aggregate: RunAggregateV2Schema,
   error_text: z.string().optional(),
+});
+
+// ============================================================
+// voice-ci.json project configuration schema
+// ============================================================
+
+export const VoiceCIConfigSchema = z.object({
+  version: z.string().default("1.0"),
+  agent: z.object({
+    name: z.string().min(1),
+    description: z.string().min(1),
+    system_prompt_file: z.string().optional(),
+    language: z.string().default("en"),
+  }),
+  connection: z.object({
+    adapter: AdapterTypeSchema,
+    target_phone_number: z.string().optional(),
+    start_command: z.string().optional(),
+    health_endpoint: z.string().default("/health"),
+    agent_url: z.string().default("http://localhost:3001"),
+  }),
+  voice: z
+    .object({
+      tts: z.object({ voice_id: z.string().optional(), api_key_env: z.string().optional() }).optional(),
+      stt: z.object({ api_key_env: z.string().optional() }).optional(),
+      silence_threshold_ms: z.number().optional(),
+      webrtc: z.object({ room: z.string().optional() }).optional(),
+    })
+    .optional(),
+  testing: z
+    .object({
+      max_parallel_runs: z.number().int().min(1).max(50).default(20),
+      default_max_turns: z.number().int().min(1).max(50).default(10),
+    })
+    .optional(),
 });

@@ -41,7 +41,7 @@ export async function callbackRoutes(app: FastifyInstance) {
     for (const result of body.conversation_results) {
       await app.db.insert(schema.scenarioResults).values({
         run_id: body.run_id,
-        name: `conversation:${result.caller_prompt.slice(0, 50)}`,
+        name: result.name ?? `conversation:${result.caller_prompt.slice(0, 50)}`,
         status: result.status,
         test_type: "conversation",
         metrics_json: result,

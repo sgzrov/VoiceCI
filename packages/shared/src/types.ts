@@ -37,6 +37,7 @@ export type AudioTestName = (typeof AUDIO_TEST_NAMES)[number];
 export type AdapterType = "ws-voice" | "sip" | "webrtc";
 
 export interface ConversationTestSpec {
+  name?: string;
   caller_prompt: string;
   max_turns: number;
   eval: string[];
@@ -76,6 +77,7 @@ export interface ConversationMetrics {
 }
 
 export interface ConversationTestResult {
+  name?: string;
   caller_prompt: string;
   status: "pass" | "fail";
   transcript: ConversationTurn[];
@@ -97,4 +99,30 @@ export interface RunnerCallbackPayloadV2 {
   conversation_results: ConversationTestResult[];
   aggregate: RunAggregateV2;
   error_text?: string;
+}
+
+// ============================================================
+// voice-ci.json project configuration
+// ============================================================
+
+export interface VoiceCIConfig {
+  version: string;
+  agent: {
+    name: string;
+    description: string;
+    system_prompt_file?: string;
+    language?: string;
+  };
+  connection: {
+    adapter: AdapterType;
+    target_phone_number?: string;
+    start_command?: string;
+    health_endpoint?: string;
+    agent_url?: string;
+  };
+  voice?: VoiceConfig;
+  testing?: {
+    max_parallel_runs?: number;
+    default_max_turns?: number;
+  };
 }

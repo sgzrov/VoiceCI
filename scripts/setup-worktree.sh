@@ -3,7 +3,6 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-ENV_LOCAL_SOURCE="$HOME/.config/voiceci/.env.local"
 ENV_SOURCE="$HOME/.config/voiceci/.env"
 
 cd "$PROJECT_ROOT"
@@ -39,10 +38,6 @@ copy_env_file() {
     if [ -f "$fallback" ]; then
       cp "$fallback" "$filename"
       echo "    Copied $filename from $fallback"
-    elif [ "$filename" = ".env.local" ]; then
-      echo "    ERROR: No .env.local found."
-      echo "    Create one at $fallback with your secrets, then re-run this script."
-      exit 1
     else
       cp .env.example "$filename"
       echo "    Created $filename from .env.example (fill in your secrets)"
@@ -50,7 +45,6 @@ copy_env_file() {
   fi
 }
 
-copy_env_file ".env.local" "$ENV_LOCAL_SOURCE"
 copy_env_file ".env" "$ENV_SOURCE"
 
 # ── 2. Install dependencies ─────────────────────────────────────────────────

@@ -1,11 +1,17 @@
 import type { FastifyInstance } from "fastify";
 import { eq, desc } from "drizzle-orm";
 import { schema } from "@voiceci/db";
-import { CreateRunSchema } from "@voiceci/shared";
+import { z } from "zod";
+
+const CreateRunBody = z.object({
+  source_type: z.enum(["bundle"]),
+  bundle_key: z.string().min(1),
+  bundle_hash: z.string().min(1),
+});
 
 export async function runRoutes(app: FastifyInstance) {
   app.post("/runs", async (request, reply) => {
-    const body = CreateRunSchema.parse(request.body);
+    const body = CreateRunBody.parse(request.body);
 
     const [run] = await app.db
       .insert(schema.runs)
@@ -21,7 +27,6 @@ export async function runRoutes(app: FastifyInstance) {
       run_id: run!.id,
       bundle_key: body.bundle_key,
       bundle_hash: body.bundle_hash,
-      mode: body.mode ?? "smoke",
     });
 
     return reply.status(201).send(run);

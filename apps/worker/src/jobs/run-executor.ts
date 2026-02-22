@@ -8,7 +8,10 @@ interface RunJob {
   run_id: string;
   bundle_key: string;
   bundle_hash: string;
-  mode: string;
+  mode?: string;
+  adapter?: string;
+  test_spec?: Record<string, unknown>;
+  target_phone_number?: string;
   voice_config?: Record<string, unknown>;
 }
 
@@ -58,6 +61,7 @@ export async function executeRun(job: RunJob): Promise<void> {
       "LIVEKIT_URL",
       "LIVEKIT_API_KEY",
       "LIVEKIT_API_SECRET",
+      "ANTHROPIC_API_KEY",
     ];
     for (const key of voiceKeys) {
       if (process.env[key]) {
@@ -74,10 +78,19 @@ export async function executeRun(job: RunJob): Promise<void> {
       S3_REGION: "auto",
     };
 
-    // Forward MCP voice config overrides as JSON (if provided)
+    // Forward test spec and adapter config as JSON
     const configEnv: Record<string, string> = {};
     if (job.voice_config) {
       configEnv["VOICE_CONFIG_JSON"] = JSON.stringify(job.voice_config);
+    }
+    if (job.test_spec) {
+      configEnv["TEST_SPEC_JSON"] = JSON.stringify(job.test_spec);
+    }
+    if (job.adapter) {
+      configEnv["ADAPTER_TYPE"] = job.adapter;
+    }
+    if (job.target_phone_number) {
+      configEnv["TARGET_PHONE_NUMBER"] = job.target_phone_number;
     }
 
     machineId = await createMachine({
@@ -88,7 +101,6 @@ export async function executeRun(job: RunJob): Promise<void> {
         RUN_ID: job.run_id,
         BUNDLE_KEY: job.bundle_key,
         BUNDLE_HASH: job.bundle_hash,
-        MODE: job.mode,
         BUNDLE_DOWNLOAD_URL: bundleDownloadUrl,
         API_CALLBACK_URL: `${apiUrl}/internal/runner-callback`,
         RUNNER_CALLBACK_SECRET: callbackSecret,

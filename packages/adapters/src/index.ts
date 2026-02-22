@@ -1,73 +1,30 @@
-import type { VoiceCIConfig } from "@voiceci/shared";
-import type { TTSConfig, STTConfig } from "@voiceci/voice";
-import { HttpAdapter } from "./http-adapter.js";
-import { WsVoiceAdapter } from "./ws-voice-adapter.js";
-import { SipVoiceAdapter } from "./sip-voice-adapter.js";
-import { WebRtcVoiceAdapter } from "./webrtc-voice-adapter.js";
-import type { AgentAdapter } from "./types.js";
+import type { AdapterType, VoiceConfig } from "@voiceci/shared";
+import type { AudioChannel } from "./audio-channel.js";
+import { WsAudioChannel } from "./ws-audio-channel.js";
+import { WebRtcAudioChannel } from "./webrtc-audio-channel.js";
+import { SipAudioChannel } from "./sip-audio-channel.js";
 
-export type { AgentAdapter, AgentResponse } from "./types.js";
-export { HttpAdapter } from "./http-adapter.js";
-export { WsVoiceAdapter } from "./ws-voice-adapter.js";
-export { SipVoiceAdapter } from "./sip-voice-adapter.js";
-export { WebRtcVoiceAdapter } from "./webrtc-voice-adapter.js";
+export type { AudioChannel, AudioChannelEvents } from "./audio-channel.js";
+export { BaseAudioChannel } from "./audio-channel.js";
+export { WsAudioChannel } from "./ws-audio-channel.js";
+export { WebRtcAudioChannel } from "./webrtc-audio-channel.js";
+export { SipAudioChannel } from "./sip-audio-channel.js";
 
-function getTtsConfig(config: VoiceCIConfig): TTSConfig {
-  return {
-    voiceId: config.voice?.tts?.voice_id,
-    apiKeyEnv: config.voice?.tts?.api_key_env,
-  };
+export interface AudioChannelConfig {
+  adapter: AdapterType;
+  agentUrl?: string;
+  targetPhoneNumber?: string;
+  voice?: VoiceConfig;
 }
 
-function getSttConfig(config: VoiceCIConfig): STTConfig {
-  return {
-    apiKeyEnv: config.voice?.stt?.api_key_env,
-    sampleRate: config.voice?.audio?.sample_rate,
-  };
-}
+export function createAudioChannel(config: AudioChannelConfig): AudioChannel {
+  const agentUrl = config.agentUrl ?? "http://localhost:3001";
 
-export function createAdapter(config: VoiceCIConfig): AgentAdapter {
-  const adapterType = config.adapter ?? "http";
-  const agentUrl = config.agent_url ?? "http://localhost:3001";
-
-  switch (adapterType) {
-    case "http":
-      return new HttpAdapter(agentUrl);
-
+  switch (config.adapter) {
     case "ws-voice":
-      return new WsVoiceAdapter({
+      return new WsAudioChannel({
         wsUrl: agentUrl.replace(/^http/, "ws"),
-        tts: getTtsConfig(config),
-        stt: getSttConfig(config),
-        silenceThresholdMs: config.voice?.silence_threshold_ms,
       });
-
-    case "sip": {
-      const telephony = config.voice?.telephony;
-      const authId =
-        process.env[telephony?.auth_id_env ?? "PLIVO_AUTH_ID"] ?? "";
-      const authToken =
-        process.env[telephony?.auth_token_env ?? "PLIVO_AUTH_TOKEN"] ?? "";
-      const publicHost = process.env["RUNNER_PUBLIC_HOST"] ?? "localhost";
-
-      if (!config.target_phone_number) {
-        throw new Error("SIP adapter requires target_phone_number in config");
-      }
-      if (!telephony?.from_number) {
-        throw new Error("SIP adapter requires voice.telephony.from_number");
-      }
-
-      return new SipVoiceAdapter({
-        phoneNumber: config.target_phone_number,
-        fromNumber: telephony.from_number,
-        authId,
-        authToken,
-        publicHost,
-        tts: getTtsConfig(config),
-        stt: getSttConfig(config),
-        silenceThresholdMs: config.voice?.silence_threshold_ms,
-      });
-    }
 
     case "webrtc": {
       const webrtc = config.voice?.webrtc;
@@ -77,23 +34,43 @@ export function createAdapter(config: VoiceCIConfig): AgentAdapter {
         process.env[webrtc?.api_key_env ?? "LIVEKIT_API_KEY"] ?? "";
       const apiSecret =
         process.env[webrtc?.api_secret_env ?? "LIVEKIT_API_SECRET"] ?? "";
-
       const roomName =
         webrtc?.room ??
         `voiceci-${process.env["RUN_ID"] ?? crypto.randomUUID().slice(0, 8)}`;
 
-      return new WebRtcVoiceAdapter({
+      return new WebRtcAudioChannel({
         livekitUrl,
         apiKey,
         apiSecret,
         roomName,
-        tts: getTtsConfig(config),
-        stt: getSttConfig(config),
-        silenceThresholdMs: config.voice?.silence_threshold_ms,
+      });
+    }
+
+    case "sip": {
+      const telephony = config.voice?.telephony;
+      const authId =
+        process.env[telephony?.auth_id_env ?? "PLIVO_AUTH_ID"] ?? "";
+      const authToken =
+        process.env[telephony?.auth_token_env ?? "PLIVO_AUTH_TOKEN"] ?? "";
+      const publicHost = process.env["RUNNER_PUBLIC_HOST"] ?? "localhost";
+
+      if (!config.targetPhoneNumber) {
+        throw new Error("SIP adapter requires targetPhoneNumber");
+      }
+      if (!telephony?.from_number) {
+        throw new Error("SIP adapter requires voice.telephony.from_number");
+      }
+
+      return new SipAudioChannel({
+        phoneNumber: config.targetPhoneNumber,
+        fromNumber: telephony.from_number,
+        authId,
+        authToken,
+        publicHost,
       });
     }
 
     default:
-      throw new Error(`Unknown adapter type: ${adapterType}`);
+      throw new Error(`Unknown adapter type: ${config.adapter}`);
   }
 }

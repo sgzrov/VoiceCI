@@ -9,12 +9,10 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@voiceci/shared": "workspace:*",
-    "@voiceci/scenarios": "workspace:*",
+    "@anthropic-ai/sdk": "^0.78.0",
     "@voiceci/adapters": "workspace:*",
-    "@voiceci/metrics": "workspace:*",
-    "@voiceci/config": "workspace:*",
-    "@voiceci/artifacts": "workspace:*"
+    "@voiceci/shared": "workspace:*",
+    "@voiceci/voice": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.7.0"

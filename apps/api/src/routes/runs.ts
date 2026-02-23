@@ -4,9 +4,9 @@ import { schema } from "@voiceci/db";
 import { z } from "zod";
 
 const CreateRunBody = z.object({
-  source_type: z.enum(["bundle"]),
-  bundle_key: z.string().min(1),
-  bundle_hash: z.string().min(1),
+  source_type: z.enum(["bundle", "remote"]),
+  bundle_key: z.string().min(1).optional(),
+  bundle_hash: z.string().min(1).optional(),
 });
 
 export async function runRoutes(app: FastifyInstance) {

@@ -1,5 +1,6 @@
 import { execSync, type ChildProcess } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { TestSpec, AudioTestResult, ConversationTestResult, RunAggregateV2, AdapterType, VoiceConfig } from "@voiceci/shared";
 import { createAudioChannel, type AudioChannelConfig } from "@voiceci/adapters";
 import { runAudioTest } from "./audio-tests/index.js";
@@ -11,26 +12,28 @@ const WORK_DIR = "/work";
 
 async function main() {
   const runId = requireEnv("RUN_ID");
-  const bundleDownloadUrl = requireEnv("BUNDLE_DOWNLOAD_URL");
+  const bundleDownloadUrl = process.env["BUNDLE_DOWNLOAD_URL"];
   const testSpec = JSON.parse(requireEnv("TEST_SPEC_JSON")) as TestSpec;
   const adapterType = (process.env["ADAPTER_TYPE"] ?? "ws-voice") as AdapterType;
 
   console.log(`Runner starting for run ${runId}`);
 
-  // Download and extract bundle
-  mkdirSync(WORK_DIR, { recursive: true });
+  // Download and extract bundle (only needed for local agents)
+  if (bundleDownloadUrl) {
+    mkdirSync(WORK_DIR, { recursive: true });
 
-  console.log("Downloading bundle...");
-  const response = await fetch(bundleDownloadUrl);
-  if (!response.ok) {
-    throw new Error(`Failed to download bundle: ${response.status}`);
+    console.log("Downloading bundle...");
+    const response = await fetch(bundleDownloadUrl);
+    if (!response.ok) {
+      throw new Error(`Failed to download bundle: ${response.status}`);
+    }
+
+    const arrayBuffer = await response.arrayBuffer();
+    writeFileSync("/tmp/bundle.tar.gz", Buffer.from(arrayBuffer));
+
+    console.log("Extracting bundle...");
+    execSync(`tar -xzf /tmp/bundle.tar.gz -C ${WORK_DIR}`, { stdio: "inherit" });
   }
-
-  const arrayBuffer = await response.arrayBuffer();
-  writeFileSync("/tmp/bundle.tar.gz", Buffer.from(arrayBuffer));
-
-  console.log("Extracting bundle...");
-  execSync(`tar -xzf /tmp/bundle.tar.gz -C ${WORK_DIR}`, { stdio: "inherit" });
 
   // Parse voice config from env
   let voiceConfig: VoiceConfig | undefined;
@@ -46,8 +49,12 @@ async function main() {
   const agentUrl = process.env["AGENT_URL"] ?? "http://localhost:3001";
 
   if (!isRemoteAgent) {
-    console.log("Installing dependencies...");
-    execSync("npm install", { cwd: WORK_DIR, stdio: "inherit" });
+    if (existsSync(join(WORK_DIR, "node_modules"))) {
+      console.log("node_modules present (prebaked image), skipping install");
+    } else {
+      console.log("Installing dependencies...");
+      execSync("npm install", { cwd: WORK_DIR, stdio: "inherit" });
+    }
 
     console.log("Starting agent...");
     const startCmd = process.env["START_COMMAND"] ?? "npm run start";

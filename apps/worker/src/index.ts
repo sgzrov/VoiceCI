@@ -8,15 +8,36 @@ const connection = new IORedis(redisUrl, { maxRetriesPerRequest: null });
 const worker = new Worker(
   "voice-ci-runs",
   async (job) => {
-    const { run_id, bundle_key, bundle_hash, mode } = job.data as {
+    const data = job.data as {
       run_id: string;
-      bundle_key: string;
-      bundle_hash: string;
-      mode: string;
+      bundle_key: string | null;
+      bundle_hash: string | null;
+      lockfile_hash?: string | null;
+      mode?: string;
+      adapter?: string;
+      test_spec?: Record<string, unknown>;
+      target_phone_number?: string;
+      voice_config?: Record<string, unknown>;
+      start_command?: string;
+      health_endpoint?: string;
+      agent_url?: string;
     };
 
-    console.log(`Processing run ${run_id} (mode: ${mode})`);
-    await executeRun({ run_id, bundle_key, bundle_hash, mode });
+    console.log(`Processing run ${data.run_id} (adapter: ${data.adapter ?? data.mode ?? "unknown"})`);
+    await executeRun({
+      run_id: data.run_id,
+      bundle_key: data.bundle_key,
+      bundle_hash: data.bundle_hash,
+      lockfile_hash: data.lockfile_hash ?? null,
+      mode: data.mode,
+      adapter: data.adapter,
+      test_spec: data.test_spec,
+      target_phone_number: data.target_phone_number,
+      voice_config: data.voice_config,
+      start_command: data.start_command,
+      health_endpoint: data.health_endpoint,
+      agent_url: data.agent_url,
+    });
   },
   {
     connection,

@@ -6,8 +6,21 @@ import type { AudioChannel } from "@voiceci/adapters";
 import { VoiceActivityDetector, type VADState } from "@voiceci/voice";
 
 /**
+ * Stats about audio collection — used by adaptive threshold to tune silence detection.
+ */
+export interface CollectionStats {
+  /** Number of distinct speech segments (speech→silence→speech = 2 segments) */
+  speechSegments: number;
+  /** Longest mid-response silence in ms (silence between speech segments, NOT the final silence) */
+  maxInternalSilenceMs: number;
+  /** Total time spent in speech state (ms) */
+  totalSpeechMs: number;
+}
+
+/**
  * Collect audio from the channel until VAD detects end-of-turn or timeout.
- * Returns the concatenated PCM buffer of all received audio.
+ * Returns the concatenated PCM buffer of all received audio plus collection stats
+ * for adaptive threshold tuning.
  */
 export async function collectUntilEndOfTurn(
   channel: AudioChannel,
@@ -15,7 +28,7 @@ export async function collectUntilEndOfTurn(
     timeoutMs?: number;
     silenceThresholdMs?: number;
   } = {}
-): Promise<{ audio: Buffer; timedOut: boolean }> {
+): Promise<{ audio: Buffer; timedOut: boolean; stats: CollectionStats }> {
   const timeoutMs = opts.timeoutMs ?? 15000;
   const silenceThresholdMs = opts.silenceThresholdMs ?? 1500;
 
@@ -24,6 +37,14 @@ export async function collectUntilEndOfTurn(
 
   const chunks: Buffer[] = [];
   let timedOut = false;
+
+  // State transition tracking for adaptive thresholds
+  let prevState: VADState = "silence";
+  let speechSegments = 0;
+  let maxInternalSilenceMs = 0;
+  let totalSpeechMs = 0;
+  let silenceStartedAt: number | null = null;
+  let speechStartedAt: number | null = null;
 
   try {
     await new Promise<void>((resolve) => {
@@ -35,6 +56,30 @@ export async function collectUntilEndOfTurn(
       const onAudio = (chunk: Buffer) => {
         chunks.push(chunk);
         const state = vad.process(chunk);
+        const now = Date.now();
+
+        // Track speech → silence transition
+        if (state === "silence" && prevState === "speech") {
+          silenceStartedAt = now;
+          if (speechStartedAt !== null) {
+            totalSpeechMs += now - speechStartedAt;
+            speechStartedAt = null;
+          }
+        }
+
+        // Track silence → speech transition (mid-response pause resolved)
+        if (state === "speech" && prevState !== "speech") {
+          speechSegments++;
+          speechStartedAt = now;
+          if (silenceStartedAt !== null) {
+            const silenceDurationMs = now - silenceStartedAt;
+            maxInternalSilenceMs = Math.max(maxInternalSilenceMs, silenceDurationMs);
+            silenceStartedAt = null;
+          }
+        }
+
+        prevState = state;
+
         if (state === "end_of_turn") {
           clearTimeout(timeout);
           channel.off("audio", onAudio);
@@ -45,12 +90,17 @@ export async function collectUntilEndOfTurn(
       channel.on("audio", onAudio);
     });
   } finally {
+    // Account for speech that was still ongoing at end
+    if (speechStartedAt !== null) {
+      totalSpeechMs += Date.now() - speechStartedAt;
+    }
     vad.destroy();
   }
 
   return {
     audio: Buffer.concat(chunks),
     timedOut,
+    stats: { speechSegments, maxInternalSilenceMs, totalSpeechMs },
   };
 }
 

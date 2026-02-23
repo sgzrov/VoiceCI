@@ -1,10 +1,9 @@
 import { execSync, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { TestSpec, AudioTestResult, ConversationTestResult, RunAggregateV2, AdapterType, VoiceConfig } from "@voiceci/shared";
-import { createAudioChannel, type AudioChannelConfig } from "@voiceci/adapters";
-import { runAudioTest } from "./audio-tests/index.js";
-import { runConversationTest } from "./conversation/index.js";
+import type { TestSpec, AdapterType, VoiceConfig, AudioTestThresholds } from "@voiceci/shared";
+import type { AudioChannelConfig } from "@voiceci/adapters";
+import { executeTests } from "./executor.js";
 import { reportResults } from "./reporter.js";
 import { waitForHealth } from "./health-check.js";
 
@@ -41,6 +40,13 @@ async function main() {
   if (voiceConfigJson) {
     const parsed = JSON.parse(voiceConfigJson) as Record<string, unknown>;
     voiceConfig = (parsed.voice as VoiceConfig) ?? undefined;
+  }
+
+  // Parse audio test thresholds from env
+  let audioTestThresholds: AudioTestThresholds | undefined;
+  const thresholdsJson = process.env["AUDIO_TEST_THRESHOLDS_JSON"];
+  if (thresholdsJson) {
+    audioTestThresholds = JSON.parse(thresholdsJson) as AudioTestThresholds;
   }
 
   // For remote agents (SIP/WebRTC), skip local agent startup
@@ -84,77 +90,16 @@ async function main() {
     voice: voiceConfig,
   };
 
-  const audioResults: AudioTestResult[] = [];
-  const conversationResults: ConversationTestResult[] = [];
-
   try {
-    // Run audio tests
-    if (testSpec.audio_tests && testSpec.audio_tests.length > 0) {
-      console.log(`Running ${testSpec.audio_tests.length} audio tests...`);
-      for (const testName of testSpec.audio_tests) {
-        console.log(`  Audio test: ${testName}`);
-        const channel = createAudioChannel(channelConfig);
-        try {
-          await channel.connect();
-          const result = await runAudioTest(testName, channel);
-          audioResults.push(result);
-          console.log(`    ${testName}: ${result.status} (${result.duration_ms}ms)`);
-        } finally {
-          await channel.disconnect().catch(() => {});
-        }
-      }
-    }
-
-    // Run conversation tests
-    if (testSpec.conversation_tests && testSpec.conversation_tests.length > 0) {
-      console.log(`Running ${testSpec.conversation_tests.length} conversation tests...`);
-      for (const spec of testSpec.conversation_tests) {
-        console.log(`  Conversation: ${spec.caller_prompt.slice(0, 60)}...`);
-        const channel = createAudioChannel(channelConfig);
-        try {
-          await channel.connect();
-          const result = await runConversationTest(spec, channel);
-          conversationResults.push(result);
-          console.log(`    Status: ${result.status} (${result.duration_ms}ms)`);
-        } finally {
-          await channel.disconnect().catch(() => {});
-        }
-      }
-    }
-
-    // Aggregate results
-    const audioPassed = audioResults.filter((r) => r.status === "pass").length;
-    const audioFailed = audioResults.filter((r) => r.status === "fail").length;
-    const convPassed = conversationResults.filter((r) => r.status === "pass").length;
-    const convFailed = conversationResults.filter((r) => r.status === "fail").length;
-
-    const totalDurationMs =
-      audioResults.reduce((sum, r) => sum + r.duration_ms, 0) +
-      conversationResults.reduce((sum, r) => sum + r.duration_ms, 0);
-
-    const aggregate: RunAggregateV2 = {
-      audio_tests: {
-        total: audioResults.length,
-        passed: audioPassed,
-        failed: audioFailed,
-      },
-      conversation_tests: {
-        total: conversationResults.length,
-        passed: convPassed,
-        failed: convFailed,
-      },
-      total_duration_ms: totalDurationMs,
-    };
-
-    const overallStatus = audioFailed + convFailed === 0 ? "pass" : "fail";
-
-    console.log(
-      `Run complete: ${overallStatus} (audio: ${audioPassed}/${audioResults.length}, conversation: ${convPassed}/${conversationResults.length})`
-    );
+    const { status, audioResults, conversationResults, aggregate } = await executeTests({
+      testSpec,
+      channelConfig,
+      audioTestThresholds,
+    });
 
     await reportResults({
       run_id: runId,
-      status: overallStatus,
+      status,
       audio_results: audioResults,
       conversation_results: conversationResults,
       aggregate,

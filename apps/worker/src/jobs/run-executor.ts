@@ -14,6 +14,7 @@ interface RunJob {
   test_spec?: Record<string, unknown>;
   target_phone_number?: string;
   voice_config?: Record<string, unknown>;
+  audio_test_thresholds?: Record<string, unknown> | null;
   start_command?: string;
   health_endpoint?: string;
   agent_url?: string;
@@ -274,6 +275,9 @@ export async function executeRun(job: RunJob): Promise<void> {
     if (job.voice_config) {
       configEnv["VOICE_CONFIG_JSON"] = JSON.stringify(job.voice_config);
     }
+    if (job.audio_test_thresholds) {
+      configEnv["AUDIO_TEST_THRESHOLDS_JSON"] = JSON.stringify(job.audio_test_thresholds);
+    }
     if (job.test_spec) {
       configEnv["TEST_SPEC_JSON"] = JSON.stringify(job.test_spec);
     }
@@ -305,12 +309,33 @@ export async function executeRun(job: RunJob): Promise<void> {
     if (job.bundle_hash) machineEnv["BUNDLE_HASH"] = job.bundle_hash;
     if (bundleDownloadUrl) machineEnv["BUNDLE_DOWNLOAD_URL"] = bundleDownloadUrl;
 
+    // Dynamic machine sizing based on total test count
+    const testCount =
+      (Array.isArray(job.test_spec?.audio_tests) ? (job.test_spec.audio_tests as unknown[]).length : 0) +
+      (Array.isArray(job.test_spec?.conversation_tests) ? (job.test_spec.conversation_tests as unknown[]).length : 0);
+
+    let cpuKind = "shared";
+    let cpus = 1;
+    let memoryMb = 1024;
+
+    if (testCount > 12) {
+      cpuKind = "performance";
+      cpus = 4;
+      memoryMb = 4096;
+    } else if (testCount > 6) {
+      cpuKind = "performance";
+      cpus = 2;
+      memoryMb = 2048;
+    }
+
     machineId = await createMachine({
       appName,
       image: resolvedImage,
       region,
       env: machineEnv,
-      memoryMb: 1024,
+      cpuKind,
+      cpus,
+      memoryMb,
     });
 
     console.log(`Machine ${machineId} created for run ${job.run_id} (image: ${resolvedImage})`);

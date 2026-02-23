@@ -14,18 +14,20 @@
  */
 
 import type { AudioChannel } from "@voiceci/adapters";
-import type { AudioTestResult } from "@voiceci/shared";
+import type { AudioTestResult, AudioTestThresholds } from "@voiceci/shared";
 import { synthesize } from "@voiceci/voice";
 import { collectUntilEndOfTurn, waitForSpeech } from "./helpers.js";
 
 const PROMPT = "Hi, can you tell me about your services?";
 const ECHO_WINDOW_MS = 3000;
 const MAX_DETECTION_MS = 15000;
-const LOOP_THRESHOLD = 2;
+const DEFAULT_LOOP_THRESHOLD = 2;
 
 export async function runEchoTest(
-  channel: AudioChannel
+  channel: AudioChannel,
+  thresholds?: AudioTestThresholds,
 ): Promise<AudioTestResult> {
+  const LOOP_THRESHOLD = thresholds?.echo?.loop_threshold ?? DEFAULT_LOOP_THRESHOLD;
   const startTime = performance.now();
 
   // Phase 1: Send a real prompt and collect the agent's first response

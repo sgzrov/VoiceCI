@@ -18,6 +18,7 @@ const worker = new Worker(
       test_spec?: Record<string, unknown>;
       target_phone_number?: string;
       voice_config?: Record<string, unknown>;
+      audio_test_thresholds?: Record<string, unknown> | null;
       start_command?: string;
       health_endpoint?: string;
       agent_url?: string;
@@ -34,6 +35,7 @@ const worker = new Worker(
       test_spec: data.test_spec,
       target_phone_number: data.target_phone_number,
       voice_config: data.voice_config,
+      audio_test_thresholds: data.audio_test_thresholds ?? null,
       start_command: data.start_command,
       health_endpoint: data.health_endpoint,
       agent_url: data.agent_url,

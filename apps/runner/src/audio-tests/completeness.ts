@@ -9,7 +9,7 @@
  */
 
 import type { AudioChannel } from "@voiceci/adapters";
-import type { AudioTestResult } from "@voiceci/shared";
+import type { AudioTestResult, AudioTestThresholds } from "@voiceci/shared";
 import { synthesize, transcribe } from "@voiceci/voice";
 import { collectUntilEndOfTurn } from "./helpers.js";
 
@@ -18,10 +18,13 @@ const PROMPT =
 
 // Regex for sentences that end properly (period, question mark, exclamation)
 const COMPLETE_SENTENCE_RE = /[.!?]["']?\s*$/;
+const DEFAULT_MIN_WORD_COUNT = 15;
 
 export async function runCompletenessTest(
-  channel: AudioChannel
+  channel: AudioChannel,
+  thresholds?: AudioTestThresholds,
 ): Promise<AudioTestResult> {
+  const MIN_WORD_COUNT = thresholds?.response_completeness?.min_word_count ?? DEFAULT_MIN_WORD_COUNT;
   const startTime = performance.now();
 
   // Send a prompt that should elicit a long response
@@ -71,7 +74,7 @@ export async function runCompletenessTest(
   const wordCount = trimmed.split(/\s+/).length;
 
   // A complete response to "explain three benefits" should have reasonable length
-  const hasSubstance = wordCount >= 15;
+  const hasSubstance = wordCount >= MIN_WORD_COUNT;
   const passed = endsComplete && hasSubstance;
 
   const durationMs = Math.round(performance.now() - startTime);

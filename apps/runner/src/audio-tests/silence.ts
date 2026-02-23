@@ -9,17 +9,19 @@
  */
 
 import type { AudioChannel } from "@voiceci/adapters";
-import type { AudioTestResult } from "@voiceci/shared";
+import type { AudioTestResult, AudioTestThresholds } from "@voiceci/shared";
 import { synthesize } from "@voiceci/voice";
 import { waitForSpeech, collectUntilEndOfTurn } from "./helpers.js";
 import { generateSilence } from "./signals.js";
 
-const SILENCE_DURATION_MS = 8000;
+const DEFAULT_SILENCE_DURATION_MS = 8000;
 const RE_PROMPT_TIMEOUT_MS = 15000;
 
 export async function runSilenceHandlingTest(
-  channel: AudioChannel
+  channel: AudioChannel,
+  thresholds?: AudioTestThresholds,
 ): Promise<AudioTestResult> {
+  const SILENCE_DURATION_MS = thresholds?.silence_handling?.silence_duration_ms ?? DEFAULT_SILENCE_DURATION_MS;
   const startTime = performance.now();
 
   // Step 1: Send greeting to start conversation

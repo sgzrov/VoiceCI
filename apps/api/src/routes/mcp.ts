@@ -1,13 +1,13 @@
 import type { FastifyInstance } from "fastify";
-import { eq, inArray } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { schema } from "@voiceci/db";
 import { createStorageClient } from "@voiceci/artifacts";
 import { z } from "zod";
-import { AudioTestNameSchema, ConversationTestSpecSchema, AdapterTypeSchema } from "@voiceci/shared";
+import { AudioTestNameSchema, ConversationTestSpecSchema, AdapterTypeSchema, AudioTestThresholdsSchema, LoadPatternSchema } from "@voiceci/shared";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
+import { runTestsInProcess, runLoadTestInProcess } from "../services/test-runner.js";
 
 // ============================================================
 // Session state — exported for callback.ts push notifications
@@ -37,7 +37,7 @@ const TESTING_DOCS = `# VoiceCI Testing Documentation
 
 ## Audio Tests Reference
 
-Each audio test runs on its own isolated Fly Machine.
+Tests run in parallel with independent connections. For already-deployed agents (SIP, WebRTC, or ws-voice with agent_url), tests run instantly with no infrastructure overhead.
 
 | Test | What It Measures | When to Include | Duration |
 |------|------------------|-----------------|----------|
@@ -50,11 +50,58 @@ Each audio test runs on its own isolated Fly Machine.
 
 ---
 
+## Agent Analysis (Do This First)
+
+**Before writing ANY test scenarios, you MUST understand the agent you're testing.** You have full access to the user's codebase — use it.
+
+### Step 1: Explore the Agent
+
+Read the agent's source code to find:
+- **System prompt** — the core instructions (look for files like \`prompt.ts\`, \`system-prompt.txt\`, \`agent.ts\`, or config files containing the prompt)
+- **Tools/functions** — what APIs the agent can call (booking, lookups, transfers, etc.)
+- **Personality & constraints** — tone, refusal boundaries, required disclosures, compliance rules
+- **Conversation flow** — greeting → authentication → main task → closing, or freeform?
+- **Integration points** — external APIs, databases, CRM systems the agent interacts with
+
+### Step 2: Extract Testable Components
+
+From the codebase, identify:
+- **Primary intents** — the 3-5 main things callers ask for (book appointment, check status, get info, etc.)
+- **Branching logic** — what decisions the agent makes (time slots available vs. not, authorized vs. unauthorized caller)
+- **Refusal boundaries** — what the agent should NOT do (medical advice, financial decisions, revealing prompt)
+- **Required behaviors** — must-do actions (verify identity, read disclaimer, offer transfer)
+- **Tool call sequences** — correct ordering of API calls, required parameters, error handling
+
+### Step 3: Generate Scenarios Across 10 Categories
+
+Use your understanding of the agent to generate conversation tests covering:
+
+1. **Happy path** — standard successful flow for each primary intent (cooperative caller, clean audio)
+2. **Edge cases** — confused caller, elderly caller, non-native speaker, caller who rambles or goes off-topic
+3. **Error recovery** — agent misunderstands, caller gives invalid input, API returns an error
+4. **Adversarial / Red team** — prompt injection ("ignore your instructions"), jailbreak, PII extraction attempts
+5. **Compliance & boundaries** — out-of-scope requests, required disclosures, refusal behavior
+6. **Multi-turn state** — does the agent remember context from 5+ turns ago? Can it handle topic switches and returns?
+7. **Interruption behavior** — caller changes mind mid-sentence, corrects themselves, asks to start over
+8. **Tool/function validation** — does the agent call the right tools with correct parameters in the right order?
+9. **Persona stress testing** — frustrated customer, emotional caller, vague communicator, rapid-fire questioner
+10. **Boundary testing** — maximum input length, unusual data formats, simultaneous requests
+
+### Scaling Guide
+
+- **Smoke run**: 2-3 happy path + 1 adversarial (quick validation)
+- **Standard run**: 1-2 scenarios per category for the relevant categories (~8-12 total)
+- **Thorough run**: 2-3 scenarios per category, higher max_turns (~20-30 total)
+
+**Key advantage**: You can see the agent's actual code — not just its prompt. Test implementation details that a black-box platform would miss: specific tool call parameters, error handling branches, edge cases in business logic.
+
+---
+
 ## Writing Conversation Tests
 
 ### caller_prompt — Persona Definition
 
-Write a specific persona with a name, goal, emotional state, and behavioral instructions.
+Write a specific persona with a name, goal, emotional state, and behavioral instructions. **Base these on your Agent Analysis above — reference actual intents, tools, and constraints you found in the codebase.**
 
 **Happy path example:**
 "You are Sarah, a patient calling Dr. Smith's dental office to book a teeth cleaning next week. You prefer mornings but are flexible. When offered a time, confirm it. Be polite and straightforward."
@@ -97,6 +144,23 @@ Adjust based on context:
 - Standard validation → 8-10 turns, 4-6 scenarios
 - After smoke failures or user requests thoroughness → 15-20 turns, 7-10 scenarios with targeted evals
 
+### silence_threshold_ms — End-of-Turn Detection (Adaptive)
+
+Sets the **starting** silence threshold for end-of-turn detection (default: 1500ms). The threshold then **adapts automatically** during the conversation based on the agent's observed response cadence.
+
+**How adaptation works:** After each agent response, the system analyzes mid-response pauses (speech→silence→speech patterns). If the agent had pauses close to the threshold, it increases for the next turn to avoid premature cutoff. If the agent responds cleanly with no long pauses, it drifts back toward the base value. Bounds: 600ms minimum, 5000ms maximum.
+
+**Setting the starting threshold** — pick based on what you see in the agent's code:
+- **800-1200ms**: Fast, concise agents (FAQ bots, simple responders)
+- **1500ms** (default): Standard conversational agents
+- **2000-3000ms**: Agents that pause to think, do tool calls, or give long multi-sentence answers
+- **3000-5000ms**: Agents with long processing time (complex lookups, multi-step reasoning)
+
+The adaptive system handles the cases where a fixed threshold fails:
+- **Thinking pauses**: Agent pauses mid-sentence to consider → threshold increases automatically
+- **Tool call gaps**: Agent goes silent while calling an API → threshold increases for that pattern
+- **Variable pacing**: Agent gives short answers sometimes, long answers other times → threshold tracks the cadence
+
 ---
 
 ## Interpreting Results
@@ -114,6 +178,51 @@ Adjust based on context:
 - \`relevant: false\` means the conversation didn't cover that eval topic — NOT a failure.
 - \`relevant: true, passed: false\` is a real failure.
 - When a failure occurs, consider running a deeper follow-up test (more turns, more specific scenario) to confirm.
+
+---
+
+## Iterative Testing Strategy
+
+Testing is NOT single-shot. You should iterate based on results. The \`bundle_key\` from prepare_upload is reusable across runs — no need to re-upload.
+
+### Workflow: Smoke → Analyze → Follow-up → Confirm
+
+**1. Smoke test** (first run_suite call):
+- Include all 6 audio tests + 2-3 happy-path conversation tests (5 turns each)
+- This gives a broad baseline in ~60 seconds
+
+**2. Analyze results** — look for:
+- Audio test failures → root cause and re-run that specific test
+- Borderline metrics (e.g., p95 TTFB of 2800ms passes at 3000ms threshold but is concerning) → re-run with tighter \`audio_test_thresholds\`
+- Conversation eval failures → read the judge's reasoning, then design a targeted follow-up scenario
+
+**3. Targeted follow-up** (second run_suite call):
+- Re-run ONLY the failing or borderline tests, not the whole suite
+- For borderline audio: use \`audio_test_thresholds\` to tighten the threshold (e.g., \`{ ttfb: { p95_threshold_ms: 1500 } }\`)
+- For conversation failures: increase \`max_turns\` to 15-20, write a more specific persona that reproduces the failure
+- For flaky results: re-run the same test 2-3x to distinguish real failures from flakiness
+
+**4. Confirm** — stop iterating when:
+- Results are consistent across 2+ runs
+- All audio tests pass at desired thresholds
+- Conversation evals pass with targeted scenarios
+
+### When to Escalate
+- Consistent audio failures → the agent has an infrastructure problem (echo cancellation, latency, connection handling)
+- Conversation failures on happy paths → the agent's prompt or logic needs fixing
+- Flaky results that never stabilize → possible race condition or non-deterministic agent behavior
+
+### Audio Test Thresholds (Defaults)
+
+You can override any threshold via \`audio_test_thresholds\` in run_suite:
+
+| Test | Threshold | Default | Override Key |
+|------|-----------|---------|-------------|
+| echo | Loop threshold (unprompted responses) | 2 | \`echo.loop_threshold\` |
+| ttfb | p95 latency | 3000ms | \`ttfb.p95_threshold_ms\` |
+| barge_in | Stop latency | 2000ms | \`barge_in.stop_threshold_ms\` |
+| silence_handling | Silence duration | 8000ms | \`silence_handling.silence_duration_ms\` |
+| response_completeness | Minimum words | 15 | \`response_completeness.min_word_count\` |
 `;
 
 // ============================================================
@@ -193,7 +302,7 @@ function createMcpServer(app: FastifyInstance): McpServer {
   // --- Tool: run_suite ---
   mcpServer.tool(
     "run_suite",
-    "Run a full test suite against a voice agent. Creates isolated Fly Machines per test in parallel. Results are pushed via SSE as each test completes. For ws-voice: requires bundle_key/bundle_hash from prepare_upload. For sip/webrtc: no upload needed. Call get_testing_docs for available tests and conversation authoring guide.",
+    "Run a test suite against a voice agent. All tests run in parallel with independent connections. For already-deployed agents (SIP/WebRTC, or ws-voice with agent_url), tests run in-process with zero infrastructure overhead. For bundled ws-voice agents, a single Fly Machine is provisioned (sized by test count). Results are pushed via SSE as each test completes. bundle_key is reusable across runs. Use audio_test_thresholds to override default pass/fail criteria. Call get_testing_docs first.",
     {
       bundle_key: z
         .string()
@@ -243,6 +352,8 @@ function createMcpServer(app: FastifyInstance): McpServer {
         })
         .optional()
         .describe("Voice configuration overrides."),
+      audio_test_thresholds: AudioTestThresholdsSchema
+        .describe("Override default pass/fail thresholds for audio tests. Omit to use defaults. See get_testing_docs for default values."),
     },
     { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
     async (
@@ -258,6 +369,7 @@ function createMcpServer(app: FastifyInstance): McpServer {
         agent_url,
         target_phone_number,
         voice,
+        audio_test_thresholds,
       },
       extra,
     ) => {
@@ -277,165 +389,177 @@ function createMcpServer(app: FastifyInstance): McpServer {
         };
       }
 
-      // Validate bundle for ws-voice
-      const isRemote = adapter === "sip" || adapter === "webrtc";
-      if (!isRemote && (!bundle_key || !bundle_hash)) {
+      // Validate bundle for ws-voice (unless agent_url provided)
+      const isAlreadyDeployed = adapter === "sip" || adapter === "webrtc" || !!agent_url;
+      if (!isAlreadyDeployed && (!bundle_key || !bundle_hash)) {
         return {
           content: [
             {
               type: "text" as const,
-              text: "Error: bundle_key and bundle_hash are required for ws-voice adapter. Call prepare_upload first.",
+              text: "Error: bundle_key and bundle_hash are required for ws-voice adapter (unless agent_url is provided). Call prepare_upload first.",
             },
           ],
           isError: true,
         };
       }
 
-      // Fan out: create one run per test for full isolation
-      const testItems: { audio_tests?: typeof audio_tests; conversation_tests?: typeof conversation_tests }[] = [
-        ...(audio_tests ?? []).map((t) => ({ audio_tests: [t] as typeof audio_tests })),
-        ...(conversation_tests ?? []).map((t) => ({ conversation_tests: [t] as typeof conversation_tests })),
-      ];
+      const sourceType = isAlreadyDeployed ? "remote" : "bundle";
+      const testSpec = { audio_tests, conversation_tests };
 
-      const sourceType = isRemote ? "remote" : "bundle";
-      const voiceConfig = voice
-        ? { adapter, target_phone_number, voice }
-        : { adapter, target_phone_number };
+      // Single run for ALL tests
+      const [run] = await app.db
+        .insert(schema.runs)
+        .values({
+          source_type: sourceType,
+          bundle_key: bundle_key ?? null,
+          bundle_hash: bundle_hash ?? null,
+          status: "queued",
+          test_spec_json: testSpec,
+        })
+        .returning();
 
-      const runIds: string[] = [];
+      const runId = run!.id;
 
-      for (const spec of testItems) {
-        const [run] = await app.db
-          .insert(schema.runs)
-          .values({
-            source_type: sourceType,
-            bundle_key: bundle_key ?? null,
-            bundle_hash: bundle_hash ?? null,
-            status: "queued",
-            test_spec_json: spec,
-          })
-          .returning();
+      // Map run to this MCP session for push notifications
+      if (extra.sessionId) {
+        runToSession.set(runId, extra.sessionId);
+      }
+
+      if (isAlreadyDeployed) {
+        // Already-deployed agent — run tests in-process, no Fly Machine needed
+        const agentUrlResolved = agent_url ?? `http://localhost:3001`;
+        runTestsInProcess(app.db, {
+          runId,
+          testSpec,
+          channelConfig: {
+            adapter,
+            agentUrl: agentUrlResolved,
+            targetPhoneNumber: target_phone_number,
+            voice,
+          },
+          audioTestThresholds: audio_test_thresholds,
+          sessionId: extra.sessionId,
+        });
+      } else {
+        // Bundled agent — single job, single Fly Machine, parallel tests inside
+        const voiceConfig = voice
+          ? { adapter, target_phone_number, voice }
+          : { adapter, target_phone_number };
 
         await app.runQueue.add("execute-run", {
-          run_id: run!.id,
+          run_id: runId,
           bundle_key: bundle_key ?? null,
           bundle_hash: bundle_hash ?? null,
           lockfile_hash: lockfile_hash ?? null,
           adapter,
-          test_spec: spec,
+          test_spec: testSpec,
           target_phone_number,
           voice_config: voiceConfig,
+          audio_test_thresholds: audio_test_thresholds ?? null,
           start_command,
           health_endpoint,
           agent_url,
         });
-
-        runIds.push(run!.id);
-      }
-
-      // Map runs to this MCP session for push notifications
-      if (extra.sessionId) {
-        for (const id of runIds) {
-          runToSession.set(id, extra.sessionId);
-        }
       }
 
       return {
         content: [
           {
             type: "text" as const,
-            text: JSON.stringify(
-              {
-                run_ids: runIds,
-                total_tests: runIds.length,
-              },
-              null,
-              2
-            ),
+            text: JSON.stringify({ run_id: runId }, null, 2),
           },
         ],
       };
     }
   );
 
-  // --- Tool: check_runs ---
+  // --- Tool: load_test ---
   mcpServer.tool(
-    "check_runs",
-    "Check status and results of test runs. Returns full results inline for completed runs (metrics, evals, transcripts). For in-progress runs, returns status only. Results are also pushed via SSE notifications as they complete — use this tool as a fallback or to get a consolidated view.",
+    "load_test",
+    "Run a load/stress test against an already-deployed voice agent. Sends N concurrent calls with a traffic pattern (ramp, spike, sustained, soak). Measures TTFB percentiles, error rates, and auto-detects breaking point. Results pushed via SSE as timeline snapshots every second. Only works with already-deployed agents (SIP, WebRTC, or ws-voice with agent_url).",
     {
-      run_ids: z
-        .array(z.string())
+      adapter: AdapterTypeSchema.describe("Transport: ws-voice, sip, or webrtc"),
+      agent_url: z.string().describe("URL of the already-deployed agent to test"),
+      pattern: LoadPatternSchema.describe(
+        "Traffic pattern: ramp (linear 0→target), spike (1→target instantly), sustained (full immediately), soak (slow ramp, long hold)"
+      ),
+      target_concurrency: z
+        .number()
+        .int()
         .min(1)
-        .describe("Array of run IDs from run_suite."),
+        .max(500)
+        .describe("Maximum concurrent calls to maintain"),
+      total_duration_s: z
+        .number()
+        .int()
+        .min(10)
+        .max(3600)
+        .describe("Total test duration in seconds"),
+      ramp_duration_s: z
+        .number()
+        .int()
+        .min(1)
+        .optional()
+        .describe("Duration of ramp-up phase in seconds (default: 30% of total_duration_s)"),
+      caller_prompt: z
+        .string()
+        .min(1)
+        .describe("What the simulated caller says. Pre-synthesized once and replayed for all callers."),
+      target_phone_number: z
+        .string()
+        .optional()
+        .describe("Phone number to call. Required for SIP adapter."),
+      voice: z
+        .object({
+          tts: z.object({ voice_id: z.string().optional() }).optional(),
+          stt: z.object({ api_key_env: z.string().optional() }).optional(),
+          silence_threshold_ms: z.number().optional(),
+          webrtc: z.object({ room: z.string().optional() }).optional(),
+        })
+        .optional()
+        .describe("Voice configuration overrides."),
     },
-    { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
-    async ({ run_ids }) => {
-      const runs = await app.db
-        .select()
-        .from(schema.runs)
-        .where(inArray(schema.runs.id, run_ids));
-
-      // Only fetch scenario results for completed runs
-      const terminalRunIds = runs
-        .filter((r) => r.status === "pass" || r.status === "fail")
-        .map((r) => r.id);
-
-      const scenarioResults =
-        terminalRunIds.length > 0
-          ? await app.db
-              .select()
-              .from(schema.scenarioResults)
-              .where(inArray(schema.scenarioResults.run_id, terminalRunIds))
-          : [];
-
-      // Build per-run response — full results for completed, status-only for in-progress
-      const results = runs.map((run) => {
-        const isTerminal = run.status === "pass" || run.status === "fail";
-
-        if (!isTerminal) {
-          return { run_id: run.id, status: run.status };
-        }
-
-        const scenarios = scenarioResults.filter((s) => s.run_id === run.id);
-        return {
-          run_id: run.id,
-          status: run.status,
-          aggregate: run.aggregate_json,
-          audio_results: scenarios
-            .filter((s) => s.test_type === "audio")
-            .map((s) => s.metrics_json),
-          conversation_results: scenarios
-            .filter((s) => s.test_type === "conversation")
-            .map((s) => s.metrics_json),
-          error_text: run.error_text,
-        };
+    { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+    async (
+      {
+        adapter,
+        agent_url,
+        pattern,
+        target_concurrency,
+        total_duration_s,
+        ramp_duration_s,
+        caller_prompt,
+        target_phone_number,
+        voice,
+      },
+      extra,
+    ) => {
+      runLoadTestInProcess({
+        channelConfig: {
+          adapter,
+          agentUrl: agent_url,
+          targetPhoneNumber: target_phone_number,
+          voice,
+        },
+        pattern,
+        targetConcurrency: target_concurrency,
+        totalDurationS: total_duration_s,
+        rampDurationS: ramp_duration_s,
+        callerPrompt: caller_prompt,
+        sessionId: extra.sessionId,
       });
-
-      const totalPassed = runs.filter((r) => r.status === "pass").length;
-      const totalFailed = runs.filter((r) => r.status === "fail").length;
-      const pending = runs.filter(
-        (r) => r.status !== "pass" && r.status !== "fail"
-      ).length;
 
       return {
         content: [
           {
             type: "text" as const,
-            text: JSON.stringify(
-              {
-                summary: {
-                  total_runs: run_ids.length,
-                  completed: totalPassed + totalFailed,
-                  passed: totalPassed,
-                  failed: totalFailed,
-                  pending,
-                  all_done: pending === 0,
-                },
-                results,
-              },
-              null,
-              2
-            ),
+            text: JSON.stringify({
+              status: "started",
+              pattern,
+              target_concurrency,
+              total_duration_s,
+              message: "Load test running. Results will be pushed via SSE as timeline snapshots every second, with a final summary when complete.",
+            }, null, 2),
           },
         ],
       };

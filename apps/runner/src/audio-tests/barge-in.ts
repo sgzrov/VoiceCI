@@ -10,19 +10,21 @@
  */
 
 import type { AudioChannel } from "@voiceci/adapters";
-import type { AudioTestResult } from "@voiceci/shared";
+import type { AudioTestResult, AudioTestThresholds } from "@voiceci/shared";
 import { synthesize } from "@voiceci/voice";
 import { VoiceActivityDetector } from "@voiceci/voice";
 import { waitForSpeech, collectForDuration } from "./helpers.js";
 import { hasAudio } from "./signals.js";
 
-const STOP_THRESHOLD_MS = 2000;
+const DEFAULT_STOP_THRESHOLD_MS = 2000;
 const PROMPT = "Tell me a long story about a brave explorer who traveled across seven continents.";
 const INTERRUPTION = "Stop, I have a question.";
 
 export async function runBargeInTest(
-  channel: AudioChannel
+  channel: AudioChannel,
+  thresholds?: AudioTestThresholds,
 ): Promise<AudioTestResult> {
+  const STOP_THRESHOLD_MS = thresholds?.barge_in?.stop_threshold_ms ?? DEFAULT_STOP_THRESHOLD_MS;
   const startTime = performance.now();
 
   // Step 1: Send prompt to trigger a long agent response

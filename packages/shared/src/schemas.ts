@@ -12,6 +12,7 @@ export const ConversationTestSpecSchema = z.object({
   caller_prompt: z.string().min(1),
   max_turns: z.number().int().min(1).max(50).default(10),
   eval: z.array(z.string().min(1)).min(1),
+  silence_threshold_ms: z.number().int().min(200).max(10000).optional(),
 });
 
 export const TestSpecSchema = z
@@ -26,11 +27,21 @@ export const TestSpecSchema = z
 
 export const AdapterTypeSchema = z.enum(["ws-voice", "sip", "webrtc"]);
 
+export const AudioTestThresholdsSchema = z.object({
+  echo: z.object({ loop_threshold: z.number().int().min(1).optional() }).optional(),
+  ttfb: z.object({ p95_threshold_ms: z.number().min(100).optional() }).optional(),
+  barge_in: z.object({ stop_threshold_ms: z.number().min(100).optional() }).optional(),
+  silence_handling: z.object({ silence_duration_ms: z.number().min(1000).optional() }).optional(),
+  response_completeness: z.object({ min_word_count: z.number().int().min(1).optional() }).optional(),
+}).optional();
+
 export const ConversationTurnSchema = z.object({
   role: z.enum(["caller", "agent"]),
   text: z.string(),
   timestamp_ms: z.number(),
   audio_duration_ms: z.number().optional(),
+  ttfb_ms: z.number().optional(),
+  stt_confidence: z.number().optional(),
 });
 
 export const EvalResultSchema = z.object({
@@ -40,10 +51,51 @@ export const EvalResultSchema = z.object({
   reasoning: z.string(),
 });
 
+// ============================================================
+// Deep metric schemas
+// ============================================================
+
+export const TranscriptMetricsSchema = z.object({
+  wer: z.number().min(0).max(1).optional(),
+  repetition_score: z.number().min(0).max(1).optional(),
+  reprompt_count: z.number().int().min(0).optional(),
+  filler_word_rate: z.number().min(0).optional(),
+  words_per_minute: z.number().min(0).optional(),
+  vocabulary_diversity: z.number().min(0).max(1).optional(),
+});
+
+export const LatencyMetricsSchema = z.object({
+  ttfb_per_turn_ms: z.array(z.number()),
+  p50_ttfb_ms: z.number(),
+  p95_ttfb_ms: z.number(),
+  p99_ttfb_ms: z.number(),
+  first_turn_ttfb_ms: z.number(),
+  total_silence_ms: z.number(),
+  mean_turn_gap_ms: z.number(),
+});
+
+const SentimentValueSchema = z.enum(["positive", "neutral", "negative"]);
+
+export const BehavioralMetricsSchema = z.object({
+  intent_accuracy: z.object({ score: z.number(), reasoning: z.string() }).optional(),
+  hallucination_detected: z.object({ detected: z.boolean(), reasoning: z.string() }).optional(),
+  sentiment_caller: z.object({ value: SentimentValueSchema, reasoning: z.string() }).optional(),
+  sentiment_agent: z.object({ value: SentimentValueSchema, reasoning: z.string() }).optional(),
+  context_retention: z.object({ score: z.number(), reasoning: z.string() }).optional(),
+  topic_drift: z.object({ score: z.number(), reasoning: z.string() }).optional(),
+  empathy_score: z.object({ score: z.number(), reasoning: z.string() }).optional(),
+  clarity_score: z.object({ score: z.number(), reasoning: z.string() }).optional(),
+  safety_compliance: z.object({ compliant: z.boolean(), reasoning: z.string() }).optional(),
+});
+
 export const ConversationMetricsSchema = z.object({
   turns: z.number(),
   mean_ttfb_ms: z.number(),
   total_duration_ms: z.number(),
+  talk_ratio: z.number().optional(),
+  transcript: TranscriptMetricsSchema.optional(),
+  latency: LatencyMetricsSchema.optional(),
+  behavioral: BehavioralMetricsSchema.optional(),
 });
 
 export const AudioTestResultSchema = z.object({
@@ -88,6 +140,42 @@ export const RunnerCallbackV2Schema = z.object({
 });
 
 // ============================================================
+// Load testing schemas
+// ============================================================
+
+export const LoadPatternSchema = z.enum(["ramp", "spike", "sustained", "soak"]);
+
+export const LoadTestTimepointSchema = z.object({
+  elapsed_s: z.number(),
+  active_connections: z.number(),
+  ttfb_p50_ms: z.number(),
+  ttfb_p95_ms: z.number(),
+  ttfb_p99_ms: z.number(),
+  error_rate: z.number(),
+  errors_cumulative: z.number(),
+});
+
+export const LoadTestResultSchema = z.object({
+  status: z.enum(["pass", "fail"]),
+  pattern: LoadPatternSchema,
+  target_concurrency: z.number(),
+  actual_peak_concurrency: z.number(),
+  total_calls: z.number(),
+  successful_calls: z.number(),
+  failed_calls: z.number(),
+  timeline: z.array(LoadTestTimepointSchema),
+  summary: z.object({
+    ttfb_p50_ms: z.number(),
+    ttfb_p95_ms: z.number(),
+    ttfb_p99_ms: z.number(),
+    error_rate: z.number(),
+    breaking_point: z.number().optional(),
+    mean_call_duration_ms: z.number(),
+  }),
+  duration_ms: z.number(),
+});
+
+// ============================================================
 // voice-ci.json project configuration schema
 // ============================================================
 
@@ -96,8 +184,6 @@ export const VoiceCIConfigSchema = z.object({
   agent: z.object({
     name: z.string().min(1),
     description: z.string().min(1),
-    system_prompt_file: z.string().optional(),
-    language: z.string().default("en"),
   }),
   connection: z.object({
     adapter: AdapterTypeSchema,
@@ -112,12 +198,6 @@ export const VoiceCIConfigSchema = z.object({
       stt: z.object({ api_key_env: z.string().optional() }).optional(),
       silence_threshold_ms: z.number().optional(),
       webrtc: z.object({ room: z.string().optional() }).optional(),
-    })
-    .optional(),
-  testing: z
-    .object({
-      max_parallel_runs: z.number().int().min(1).max(50).default(20),
-      default_max_turns: z.number().int().min(1).max(50).default(10),
     })
     .optional(),
 });

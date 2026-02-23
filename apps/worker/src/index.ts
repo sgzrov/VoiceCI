@@ -13,27 +13,27 @@ const worker = new Worker(
       bundle_key: string | null;
       bundle_hash: string | null;
       lockfile_hash?: string | null;
-      mode?: string;
       adapter?: string;
       test_spec?: Record<string, unknown>;
       target_phone_number?: string;
       voice_config?: Record<string, unknown>;
+      audio_test_thresholds?: Record<string, unknown> | null;
       start_command?: string;
       health_endpoint?: string;
       agent_url?: string;
     };
 
-    console.log(`Processing run ${data.run_id} (adapter: ${data.adapter ?? data.mode ?? "unknown"})`);
+    console.log(`Processing run ${data.run_id} (adapter: ${data.adapter ?? "unknown"})`);
     await executeRun({
       run_id: data.run_id,
       bundle_key: data.bundle_key,
       bundle_hash: data.bundle_hash,
       lockfile_hash: data.lockfile_hash ?? null,
-      mode: data.mode,
       adapter: data.adapter,
       test_spec: data.test_spec,
       target_phone_number: data.target_phone_number,
       voice_config: data.voice_config,
+      audio_test_thresholds: data.audio_test_thresholds ?? null,
       start_command: data.start_command,
       health_endpoint: data.health_endpoint,
       agent_url: data.agent_url,

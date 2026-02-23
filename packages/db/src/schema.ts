@@ -49,7 +49,6 @@ export const scenarioResults = pgTable("scenario_results", {
   test_type: testTypeEnum("test_type"),
   metrics_json: jsonb("metrics_json").notNull(),
   trace_json: jsonb("trace_json").notNull(),
-  trace_ref: text("trace_ref"),
   created_at: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),

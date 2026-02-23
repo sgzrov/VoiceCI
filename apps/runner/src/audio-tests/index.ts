@@ -3,7 +3,7 @@
  */
 
 import type { AudioChannel } from "@voiceci/adapters";
-import type { AudioTestName, AudioTestResult } from "@voiceci/shared";
+import type { AudioTestName, AudioTestResult, AudioTestThresholds } from "@voiceci/shared";
 import { runEchoTest } from "./echo.js";
 import { runBargeInTest } from "./barge-in.js";
 import { runTtfbTest } from "./ttfb.js";
@@ -11,7 +11,7 @@ import { runSilenceHandlingTest } from "./silence.js";
 import { runConnectionStabilityTest } from "./connection.js";
 import { runCompletenessTest } from "./completeness.js";
 
-type AudioTestExecutor = (channel: AudioChannel) => Promise<AudioTestResult>;
+type AudioTestExecutor = (channel: AudioChannel, thresholds?: AudioTestThresholds) => Promise<AudioTestResult>;
 
 const EXECUTORS: Record<AudioTestName, AudioTestExecutor> = {
   echo: runEchoTest,
@@ -27,12 +27,13 @@ const EXECUTORS: Record<AudioTestName, AudioTestExecutor> = {
  */
 export async function runAudioTest(
   testName: AudioTestName,
-  channel: AudioChannel
+  channel: AudioChannel,
+  thresholds?: AudioTestThresholds,
 ): Promise<AudioTestResult> {
   const executor = EXECUTORS[testName];
 
   try {
-    return await executor(channel);
+    return await executor(channel, thresholds);
   } catch (err) {
     return {
       test_name: testName,

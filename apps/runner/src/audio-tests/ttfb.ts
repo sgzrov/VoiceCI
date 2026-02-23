@@ -9,11 +9,11 @@
  */
 
 import type { AudioChannel } from "@voiceci/adapters";
-import type { AudioTestResult } from "@voiceci/shared";
+import type { AudioTestResult, AudioTestThresholds } from "@voiceci/shared";
 import { synthesize } from "@voiceci/voice";
 import { waitForSpeech, collectUntilEndOfTurn } from "./helpers.js";
 
-const P95_THRESHOLD_MS = 3000;
+const DEFAULT_P95_THRESHOLD_MS = 3000;
 const PROMPTS = [
   "Hello, how are you?",
   "What time is it?",
@@ -23,8 +23,10 @@ const PROMPTS = [
 ];
 
 export async function runTtfbTest(
-  channel: AudioChannel
+  channel: AudioChannel,
+  thresholds?: AudioTestThresholds,
 ): Promise<AudioTestResult> {
+  const P95_THRESHOLD_MS = thresholds?.ttfb?.p95_threshold_ms ?? DEFAULT_P95_THRESHOLD_MS;
   const startTime = performance.now();
   const ttfbValues: number[] = [];
 

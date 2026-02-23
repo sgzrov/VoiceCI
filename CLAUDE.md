@@ -46,6 +46,28 @@
 - **Document Results**: Add review section to `tasks/plan.md`
 - **Capture Lessons**: Update `tasks/lessons.md` after corrections
 
+## Commit Messages
+
+Use [Conventional Commits](https://www.conventionalcommits.org/) format: `type(scope): description`
+
+| Type       | When to use                                              |
+|------------|----------------------------------------------------------|
+| `feat`     | New user-facing feature                                  |
+| `fix`      | Bug fix                                                  |
+| `refactor` | Code restructuring (no feature or fix)                   |
+| `perf`     | Performance improvement                                  |
+| `docs`     | Documentation only                                       |
+| `test`     | Add or modify tests only                                 |
+| `chore`    | Maintenance (tooling, deps, scripts) — no runtime change |
+| `build`    | Build system / deps affecting build output               |
+| `ci`       | CI configuration changes                                 |
+| `style`    | Formatting only (no logic change)                        |
+| `revert`   | Revert a prior commit                                    |
+
+- Scope is optional but encouraged: `fix(auth): handle token refresh race`
+- Keep the subject line short and imperative
+- For reverts, repeat the original subject: `revert: feat(ui): add study import modal`
+
 ## Core Principles
 - **Simplicity First**: Make every change as simple as possible. Impact maximal code.
 - **No Laziness**: Find root causes. No temporary fixes. Senior developer standards.

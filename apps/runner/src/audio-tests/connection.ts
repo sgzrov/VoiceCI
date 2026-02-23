@@ -8,7 +8,7 @@
  */
 
 import type { AudioChannel } from "@voiceci/adapters";
-import type { AudioTestResult } from "@voiceci/shared";
+import type { AudioTestResult, AudioTestThresholds } from "@voiceci/shared";
 import { synthesize } from "@voiceci/voice";
 import { waitForSpeech, collectUntilEndOfTurn } from "./helpers.js";
 
@@ -21,7 +21,8 @@ const CANNED_PROMPTS = [
 ];
 
 export async function runConnectionStabilityTest(
-  channel: AudioChannel
+  channel: AudioChannel,
+  _thresholds?: AudioTestThresholds,
 ): Promise<AudioTestResult> {
   const startTime = performance.now();
   let completedTurns = 0;

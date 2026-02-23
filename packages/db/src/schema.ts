@@ -16,7 +16,7 @@ export const runStatusEnum = pgEnum("run_status", [
   "fail",
 ]);
 
-export const sourceTypeEnum = pgEnum("source_type", ["bundle"]);
+export const sourceTypeEnum = pgEnum("source_type", ["bundle", "remote"]);
 
 export const scenarioStatusEnum = pgEnum("scenario_status", ["pass", "fail"]);
 
@@ -26,8 +26,8 @@ export const runs = pgTable("runs", {
   id: uuid("id").primaryKey().defaultRandom(),
   status: runStatusEnum("status").notNull().default("queued"),
   source_type: sourceTypeEnum("source_type").notNull(),
-  bundle_key: text("bundle_key").notNull(),
-  bundle_hash: text("bundle_hash").notNull(),
+  bundle_key: text("bundle_key"),
+  bundle_hash: text("bundle_hash"),
   created_at: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
@@ -63,6 +63,26 @@ export const baselines = pgTable("baselines", {
   created_at: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
+});
+
+export const depImageStatusEnum = pgEnum("dep_image_status", [
+  "building",
+  "ready",
+  "failed",
+]);
+
+export const depImages = pgTable("dep_images", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  lockfile_hash: text("lockfile_hash").notNull().unique(),
+  image_ref: text("image_ref").notNull(),
+  base_image_ref: text("base_image_ref"),
+  status: depImageStatusEnum("status").notNull().default("building"),
+  builder_machine_id: text("builder_machine_id"),
+  error_text: text("error_text"),
+  created_at: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  ready_at: timestamp("ready_at", { withTimezone: true }),
 });
 
 export const apiKeys = pgTable("api_keys", {

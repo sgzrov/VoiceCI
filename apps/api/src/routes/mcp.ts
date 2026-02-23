@@ -7,63 +7,37 @@ import { z } from "zod";
 import { AudioTestNameSchema, ConversationTestSpecSchema, AdapterTypeSchema } from "@voiceci/shared";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 
 // ============================================================
-// Pre-indexed testing documentation returned by get_testing_docs
+// Session state — exported for callback.ts push notifications
+// ============================================================
+
+export const transports = new Map<string, StreamableHTTPServerTransport>();
+export const mcpServers = new Map<string, McpServer>();
+export const runToSession = new Map<string, string>(); // run_id → session_id
+
+function cleanupSession(sessionId: string) {
+  transports.delete(sessionId);
+  const server = mcpServers.get(sessionId);
+  if (server) {
+    server.close().catch(() => {});
+    mcpServers.delete(sessionId);
+  }
+  for (const [runId, sid] of runToSession.entries()) {
+    if (sid === sessionId) runToSession.delete(runId);
+  }
+}
+
+// ============================================================
+// Testing documentation returned by get_testing_docs
 // ============================================================
 
 const TESTING_DOCS = `# VoiceCI Testing Documentation
 
-## voice-ci.json Schema
-
-Place a \`voice-ci.json\` file in the project root. You (Claude) should create or update this file based on the agent's codebase.
-
-\`\`\`json
-{
-  "version": "1.0",
-  "agent": {
-    "name": "Agent Name",
-    "description": "What this agent does, its purpose, constraints, and capabilities.",
-    "system_prompt_file": "./path/to/system-prompt.txt",
-    "language": "en"
-  },
-  "connection": {
-    "adapter": "ws-voice",
-    "start_command": "npm run start",
-    "health_endpoint": "/health",
-    "agent_url": "http://localhost:3001",
-    "target_phone_number": "+1234567890"
-  },
-  "voice": {
-    "tts": { "voice_id": "alloy" },
-    "silence_threshold_ms": 1500
-  },
-  "testing": {
-    "max_parallel_runs": 20,
-    "default_max_turns": 10
-  }
-}
-\`\`\`
-
-### Field Reference
-
-- **agent.name**: Human-readable name.
-- **agent.description**: CRITICAL — describe the agent's purpose, capabilities, and constraints. This drives your test generation.
-- **agent.system_prompt_file**: Path to the agent's system prompt file. Read this to understand behavioral constraints.
-- **agent.language**: ISO language code (default "en").
-- **connection.adapter**: "ws-voice" (WebSocket, most common), "sip" (phone via Plivo), or "webrtc" (LiveKit).
-- **connection.start_command**: How to start the agent locally (e.g., "npm run start", "node src/index.js").
-- **connection.health_endpoint**: Health check path (default "/health").
-- **connection.agent_url**: Agent base URL (default "http://localhost:3001").
-- **connection.target_phone_number**: Required for SIP adapter.
-- **testing.max_parallel_runs**: Max concurrent Fly Machines (default 20).
-- **testing.default_max_turns**: Default conversation turns (default 10). You override per-scenario.
-
----
-
 ## Audio Tests Reference
 
-Each audio test runs on its own Fly Machine for full isolation.
+Each audio test runs on its own isolated Fly Machine.
 
 | Test | What It Measures | When to Include | Duration |
 |------|------------------|-----------------|----------|
@@ -125,19 +99,6 @@ Adjust based on context:
 
 ---
 
-## Parallel Execution Strategy
-
-1. **ONE test per run_tests call** — each gets its own Fly Machine. Full isolation.
-2. **Fire ALL calls simultaneously** — don't wait between them.
-3. **Call check_runs in a loop** — non-blocking, returns instantly with current state. Completed runs include full results inline.
-4. **Process results as they arrive** — don't wait for all tests. Fix code, queue follow-up tests while others still run.
-5. **Repeat check_runs every 10-15s** until \`all_done\` is true.
-6. **Up to 20 concurrent runs** — worker processes them in parallel.
-7. **Typical suite**: 4-6 audio tests + 3-5 conversation tests = 7-11 parallel runs.
-8. **Wall-clock time**: ~60-120 seconds for all tests (vs 5-10 min sequential).
-
----
-
 ## Interpreting Results
 
 ### Audio Test Failures
@@ -153,26 +114,24 @@ Adjust based on context:
 - \`relevant: false\` means the conversation didn't cover that eval topic — NOT a failure.
 - \`relevant: true, passed: false\` is a real failure.
 - When a failure occurs, consider running a deeper follow-up test (more turns, more specific scenario) to confirm.
-
-### Presenting Results
-1. Overall pass/fail count across all parallel runs
-2. List failed tests with specific failure reason
-3. Key metrics (p95 TTFB, echo unprompted count, barge-in latency)
-4. Actionable suggestions for each failure
-5. If behavioral failures found, suggest deeper follow-up tests
 `;
 
-export async function mcpRoutes(app: FastifyInstance) {
-  const mcpServer = new McpServer({
-    name: "voiceci",
-    version: "0.3.0",
-  });
+// ============================================================
+// MCP server factory — one server + transport per session
+// ============================================================
+
+function createMcpServer(app: FastifyInstance): McpServer {
+  const mcpServer = new McpServer(
+    { name: "voiceci", version: "0.4.0" },
+    { capabilities: { logging: {} } },
+  );
 
   // --- Tool: get_testing_docs ---
   mcpServer.tool(
     "get_testing_docs",
-    "Get VoiceCI testing documentation: voice-ci.json schema, test authoring patterns, eval question examples, and result interpretation guide. Call this when you need to create or update a voice-ci.json config, design test scenarios, or understand how to interpret results.",
+    "Get VoiceCI testing documentation: available audio tests, conversation scenario authoring guide, eval question examples, and result interpretation. Call before designing tests for a new agent.",
     {},
+    { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
     async () => ({
       content: [{ type: "text" as const, text: TESTING_DOCS }],
     })
@@ -181,22 +140,36 @@ export async function mcpRoutes(app: FastifyInstance) {
   // --- Tool: prepare_upload ---
   mcpServer.tool(
     "prepare_upload",
-    `Get a presigned URL to upload your voice agent bundle for testing.
-
-WORKFLOW — call tools in this order:
-1. Read the project's voice-ci.json to understand the agent (create it if missing — call get_testing_docs for the schema)
-2. Read the agent's system prompt file (if specified in voice-ci.json) to understand behavioral constraints
-3. Call prepare_upload to get an upload URL
-4. Bundle the project (tar.gz, excluding node_modules/.git/dist) and upload it
-5. Fire PARALLEL run_tests calls — one per test — for full isolation
-6. Call check_runs in a loop — it returns instantly with completed results + pending statuses
-7. Process completed results immediately (fix code, queue follow-ups) while other tests still run
-8. Repeat check_runs every 10-15s until all_done is true`,
-    {},
-    async () => {
+    "Get a presigned URL and bash command to bundle and upload a voice agent for testing. Only needed for ws-voice adapter — sip/webrtc agents don't need uploads. Run the returned command, then pass bundle_key, bundle_hash, and lockfile_hash to run_suite.",
+    {
+      project_root: z
+        .string()
+        .optional()
+        .describe("Absolute path to agent project root. Used to generate the upload command."),
+    },
+    { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+    async ({ project_root }) => {
       const storage = createStorageClient();
       const bundleKey = `bundles/${randomUUID()}.tar.gz`;
       const uploadUrl = await storage.presignUpload(bundleKey);
+
+      const excludes = "--exclude=node_modules --exclude=.git --exclude=dist --exclude=.next --exclude=.turbo --exclude=coverage";
+      const root = project_root ?? ".";
+      const tarTarget = project_root
+        ? `-C ${project_root} .`
+        : ".";
+
+      // Compute lockfile hash from whichever lockfile exists
+      const lockfileHashCmd = `(cat "${root}/package-lock.json" "${root}/yarn.lock" "${root}/pnpm-lock.yaml" 2>/dev/null || true) | shasum -a 256 | awk '{print $1}'`;
+
+      const uploadCommand = [
+        `tar czf /tmp/vci-bundle.tar.gz ${excludes} ${tarTarget}`,
+        `BUNDLE_HASH=$(shasum -a 256 /tmp/vci-bundle.tar.gz | awk '{print $1}')`,
+        `LOCKFILE_HASH=$(${lockfileHashCmd})`,
+        `curl -sf -X PUT -T /tmp/vci-bundle.tar.gz -H 'Content-Type: application/gzip' '${uploadUrl}'`,
+        `echo "BUNDLE_HASH=$BUNDLE_HASH"`,
+        `echo "LOCKFILE_HASH=$LOCKFILE_HASH"`,
+      ].join(" && ");
 
       return {
         content: [
@@ -204,14 +177,9 @@ WORKFLOW — call tools in this order:
             type: "text" as const,
             text: JSON.stringify(
               {
-                upload_url: uploadUrl,
                 bundle_key: bundleKey,
-                instructions: [
-                  "1. Bundle your project: tar czf /tmp/voiceci-bundle.tar.gz --exclude=node_modules --exclude=.git --exclude=dist --exclude=.next --exclude=.turbo --exclude=coverage -C <project_root> .",
-                  "2. Compute the hash: shasum -a 256 /tmp/voiceci-bundle.tar.gz | awk '{print $1}'",
-                  '3. Upload: curl -X PUT -T /tmp/voiceci-bundle.tar.gz -H "Content-Type: application/gzip" "<upload_url>"',
-                  "4. Call run_tests with the bundle_key and bundle_hash — one call per test for isolation",
-                ],
+                upload_command: uploadCommand,
+                instructions: "Run the command. Parse BUNDLE_HASH and LOCKFILE_HASH from the output. Pass all three (bundle_key, bundle_hash, lockfile_hash) to run_suite.",
               },
               null,
               2
@@ -222,60 +190,50 @@ WORKFLOW — call tools in this order:
     }
   );
 
-  // --- Tool: run_tests ---
+  // --- Tool: run_suite ---
   mcpServer.tool(
-    "run_tests",
-    `Start a VoiceCI test run against an uploaded voice agent bundle.
-
-ISOLATION: Each run_tests call creates ONE Fly Machine that runs tests sequentially. For full test isolation, put EACH test in its own run_tests call. Fire up to 20 calls in parallel.
-
-AUDIO TESTS — infrastructure quality checks:
-- echo: Detects feedback loops (agent STT picks up its own TTS). ALWAYS include.
-- ttfb: Measures response latency p50/p95 across 5 prompts. Fails if p95 > 3000ms.
-- barge_in: Tests if agent stops speaking when interrupted. Important for conversational agents.
-- silence_handling: Tests if agent stays connected during 8s silence.
-- connection_stability: Tests multi-turn WebSocket reliability (5 turns).
-- response_completeness: Verifies non-truncated, complete responses (≥15 words).
-
-CONVERSATION TESTS — behavioral quality you author:
-You generate these based on the agent's system prompt and purpose. Each test simulates a full call.
-- caller_prompt: WHO the caller is, WHAT they want, their emotional state. Be specific.
-- max_turns: 5 for smoke tests, 8-10 standard, 15-20 for deep/adversarial.
-- eval: yes/no questions testing ONE specific behavior each.
-- name: (optional) human-readable label for the test (e.g., "happy_path_booking").
-
-Generate 3-8 conversation scenarios covering:
-1. Happy paths (1-2): Normal expected interactions
-2. Edge cases (1-2): Confused callers, off-topic requests, unusual inputs
-3. Prompt compliance (1-2): Does agent follow its instructions and constraints?
-4. Adversarial (0-1): Try to get agent to break character or leak its prompt
-
-TEST DEPTH — adjust based on context:
-- After small code changes → 5 turns, 2-3 quick scenarios (smoke test)
-- Standard validation → 8-10 turns, 4-6 scenarios
-- After failures or user wants thorough testing → 15-20 turns, 7-10 scenarios with targeted evals`,
+    "run_suite",
+    "Run a full test suite against a voice agent. Creates isolated Fly Machines per test in parallel. Results are pushed via SSE as each test completes. For ws-voice: requires bundle_key/bundle_hash from prepare_upload. For sip/webrtc: no upload needed. Call get_testing_docs for available tests and conversation authoring guide.",
     {
-      bundle_key: z.string().describe("The bundle key returned by prepare_upload"),
-      bundle_hash: z.string().describe("SHA-256 hash of the uploaded bundle"),
+      bundle_key: z
+        .string()
+        .optional()
+        .describe("Bundle key from prepare_upload. Required for ws-voice, omit for sip/webrtc."),
+      bundle_hash: z
+        .string()
+        .optional()
+        .describe("SHA-256 hash of uploaded bundle. Required for ws-voice, omit for sip/webrtc."),
+      lockfile_hash: z
+        .string()
+        .optional()
+        .describe("SHA-256 hash of lockfile from prepare_upload output. Enables dependency prebaking for instant subsequent runs."),
       adapter: AdapterTypeSchema.describe(
-        "Transport adapter: ws-voice (WebSocket — most common), sip (phone call via Plivo), or webrtc (LiveKit)"
+        "Transport: ws-voice (WebSocket), sip (phone via Plivo), or webrtc (LiveKit)"
       ),
       audio_tests: z
         .array(AudioTestNameSchema)
         .optional()
-        .describe(
-          "Audio infrastructure tests. Put EACH in its own run_tests call for isolation."
-        ),
+        .describe("Audio infrastructure tests to run."),
       conversation_tests: z
         .array(ConversationTestSpecSchema)
         .optional()
-        .describe(
-          "Conversation behavioral tests you author. Put EACH in its own run_tests call for isolation."
-        ),
+        .describe("Conversation behavioral tests to run."),
+      start_command: z
+        .string()
+        .optional()
+        .describe("Command to start the agent (default: npm run start). ws-voice only."),
+      health_endpoint: z
+        .string()
+        .optional()
+        .describe("Health check path (default: /health). ws-voice only."),
+      agent_url: z
+        .string()
+        .optional()
+        .describe("Agent base URL (default: http://localhost:3001). ws-voice only."),
       target_phone_number: z
         .string()
         .optional()
-        .describe("Phone number for SIP adapter (required when adapter is sip)"),
+        .describe("Phone number to call. Required for sip adapter."),
       voice: z
         .object({
           tts: z.object({ voice_id: z.string().optional() }).optional(),
@@ -284,10 +242,26 @@ TEST DEPTH — adjust based on context:
           webrtc: z.object({ room: z.string().optional() }).optional(),
         })
         .optional()
-        .describe("Voice configuration overrides. Read from voice-ci.json if available."),
+        .describe("Voice configuration overrides."),
     },
-    async ({ bundle_key, bundle_hash, adapter, audio_tests, conversation_tests, target_phone_number, voice }) => {
-      // Validate at least one test type is specified
+    { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+    async (
+      {
+        bundle_key,
+        bundle_hash,
+        lockfile_hash,
+        adapter,
+        audio_tests,
+        conversation_tests,
+        start_command,
+        health_endpoint,
+        agent_url,
+        target_phone_number,
+        voice,
+      },
+      extra,
+    ) => {
+      // Validate at least one test
       if (
         (!audio_tests || audio_tests.length === 0) &&
         (!conversation_tests || conversation_tests.length === 0)
@@ -296,79 +270,88 @@ TEST DEPTH — adjust based on context:
           content: [
             {
               type: "text" as const,
-              text: "Error: At least one audio_test or conversation_test is required",
+              text: "Error: At least one audio_test or conversation_test is required.",
             },
           ],
           isError: true,
         };
       }
 
-      const testSpec = { audio_tests, conversation_tests };
-
-      const [run] = await app.db
-        .insert(schema.runs)
-        .values({
-          source_type: "bundle",
-          bundle_key,
-          bundle_hash,
-          status: "queued",
-          test_spec_json: testSpec,
-        })
-        .returning();
-
-      await app.runQueue.add("execute-run", {
-        run_id: run!.id,
-        bundle_key,
-        bundle_hash,
-        adapter,
-        test_spec: testSpec,
-        target_phone_number,
-        voice_config: voice ? { adapter, target_phone_number, voice } : { adapter, target_phone_number },
-      });
-
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify({ run_id: run!.id, status: "queued" }, null, 2),
-          },
-        ],
-      };
-    }
-  );
-
-  // --- Tool: get_run_status ---
-  mcpServer.tool(
-    "get_run_status",
-    `Check the current status of a VoiceCI test run.
-
-Returns: queued | running | pass | fail
-
-Poll every 10-15 seconds. Runs typically complete in 30-180 seconds depending on test type.
-When managing parallel runs, check all run IDs in a single polling loop.
-Once status is "pass" or "fail", call get_run_result for full details.`,
-    {
-      run_id: z.string().describe("The run ID returned by run_tests"),
-    },
-    async ({ run_id }) => {
-      const [run] = await app.db
-        .select()
-        .from(schema.runs)
-        .where(eq(schema.runs.id, run_id))
-        .limit(1);
-
-      if (!run) {
+      // Validate bundle for ws-voice
+      const isRemote = adapter === "sip" || adapter === "webrtc";
+      if (!isRemote && (!bundle_key || !bundle_hash)) {
         return {
-          content: [{ type: "text" as const, text: "Run not found" }],
+          content: [
+            {
+              type: "text" as const,
+              text: "Error: bundle_key and bundle_hash are required for ws-voice adapter. Call prepare_upload first.",
+            },
+          ],
           isError: true,
         };
+      }
+
+      // Fan out: create one run per test for full isolation
+      const testItems: { audio_tests?: typeof audio_tests; conversation_tests?: typeof conversation_tests }[] = [
+        ...(audio_tests ?? []).map((t) => ({ audio_tests: [t] as typeof audio_tests })),
+        ...(conversation_tests ?? []).map((t) => ({ conversation_tests: [t] as typeof conversation_tests })),
+      ];
+
+      const sourceType = isRemote ? "remote" : "bundle";
+      const voiceConfig = voice
+        ? { adapter, target_phone_number, voice }
+        : { adapter, target_phone_number };
+
+      const runIds: string[] = [];
+
+      for (const spec of testItems) {
+        const [run] = await app.db
+          .insert(schema.runs)
+          .values({
+            source_type: sourceType,
+            bundle_key: bundle_key ?? null,
+            bundle_hash: bundle_hash ?? null,
+            status: "queued",
+            test_spec_json: spec,
+          })
+          .returning();
+
+        await app.runQueue.add("execute-run", {
+          run_id: run!.id,
+          bundle_key: bundle_key ?? null,
+          bundle_hash: bundle_hash ?? null,
+          lockfile_hash: lockfile_hash ?? null,
+          adapter,
+          test_spec: spec,
+          target_phone_number,
+          voice_config: voiceConfig,
+          start_command,
+          health_endpoint,
+          agent_url,
+        });
+
+        runIds.push(run!.id);
+      }
+
+      // Map runs to this MCP session for push notifications
+      if (extra.sessionId) {
+        for (const id of runIds) {
+          runToSession.set(id, extra.sessionId);
+        }
       }
 
       return {
         content: [
           {
             type: "text" as const,
-            text: JSON.stringify({ run_id: run.id, status: run.status }, null, 2),
+            text: JSON.stringify(
+              {
+                run_ids: runIds,
+                total_tests: runIds.length,
+              },
+              null,
+              2
+            ),
           },
         ],
       };
@@ -378,21 +361,14 @@ Once status is "pass" or "fail", call get_run_result for full details.`,
   // --- Tool: check_runs ---
   mcpServer.tool(
     "check_runs",
-    `Non-blocking check on multiple parallel test runs. Returns immediately with current state.
-
-Call this in a loop after firing parallel run_tests calls. For every COMPLETED run, full results (audio metrics, conversation evals, error text) are included inline — no separate get_run_result call needed. For still-running runs, only status is returned.
-
-PROGRESSIVE WORKFLOW — process results as they arrive:
-1. Fire all run_tests calls in parallel → collect run IDs
-2. Call check_runs with all run IDs → returns instantly
-3. Process any completed results (analyze failures, start fixing code, queue follow-up tests)
-4. If runs remain, call check_runs again after 10-15 seconds
-5. Repeat until all_done is true
-
-This lets you act on early results immediately — fix code, run deeper tests — while other tests are still running. You never block.`,
+    "Check status and results of test runs. Returns full results inline for completed runs (metrics, evals, transcripts). For in-progress runs, returns status only. Results are also pushed via SSE notifications as they complete — use this tool as a fallback or to get a consolidated view.",
     {
-      run_ids: z.array(z.string()).min(1).describe("Array of run IDs returned by run_tests calls"),
+      run_ids: z
+        .array(z.string())
+        .min(1)
+        .describe("Array of run IDs from run_suite."),
     },
+    { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
     async ({ run_ids }) => {
       const runs = await app.db
         .select()
@@ -404,12 +380,13 @@ This lets you act on early results immediately — fix code, run deeper tests �
         .filter((r) => r.status === "pass" || r.status === "fail")
         .map((r) => r.id);
 
-      const scenarioResults = terminalRunIds.length > 0
-        ? await app.db
-            .select()
-            .from(schema.scenarioResults)
-            .where(inArray(schema.scenarioResults.run_id, terminalRunIds))
-        : [];
+      const scenarioResults =
+        terminalRunIds.length > 0
+          ? await app.db
+              .select()
+              .from(schema.scenarioResults)
+              .where(inArray(schema.scenarioResults.run_id, terminalRunIds))
+          : [];
 
       // Build per-run response — full results for completed, status-only for in-progress
       const results = runs.map((run) => {
@@ -465,108 +442,90 @@ This lets you act on early results immediately — fix code, run deeper tests �
     }
   );
 
-  // --- Tool: get_run_result ---
-  mcpServer.tool(
-    "get_run_result",
-    `Get the full results of a completed VoiceCI test run. Prefer check_runs when managing multiple parallel runs — it includes results inline for completed runs.
+  return mcpServer;
+}
 
-Returns audio test metrics and/or conversation eval results depending on what was run.
+// ============================================================
+// Route registration
+// ============================================================
 
-INTERPRETING RESULTS:
-- Audio: Check specific metrics (p95_ttfb_ms, unprompted_count for echo, stop_latency_ms for barge_in)
-- Conversation: Focus on eval_results — each has {question, relevant, passed, reasoning}
-  - relevant=false: conversation didn't cover this topic (NOT a failure)
-  - relevant=true, passed=false: REAL failure — read the reasoning
-- Aggregate across all parallel runs to get the full picture
-
-PRESENTING RESULTS:
-1. Overall pass/fail count across all runs
-2. Failed tests with specific failure reasoning
-3. Key metrics (p95 TTFB, echo count, barge-in latency)
-4. Actionable fix suggestions for each failure
-5. If behavioral tests failed, consider running deeper follow-up tests`,
-    {
-      run_id: z.string().describe("The run ID to get results for"),
-    },
-    async ({ run_id }) => {
-      const [run] = await app.db
-        .select()
-        .from(schema.runs)
-        .where(eq(schema.runs.id, run_id))
-        .limit(1);
-
-      if (!run) {
-        return {
-          content: [{ type: "text" as const, text: "Run not found" }],
-          isError: true,
-        };
-      }
-
-      const testResults = await app.db
-        .select()
-        .from(schema.scenarioResults)
-        .where(eq(schema.scenarioResults.run_id, run_id));
-
-      // Separate audio and conversation results by test_type
-      const audioResults = testResults
-        .filter((r) => r.test_type === "audio")
-        .map((r) => r.metrics_json);
-      const conversationResults = testResults
-        .filter((r) => r.test_type === "conversation")
-        .map((r) => r.metrics_json);
-
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify(
-              {
-                run_id: run.id,
-                status: run.status,
-                aggregate: run.aggregate_json,
-                audio_results: audioResults,
-                conversation_results: conversationResults,
-                error_text: run.error_text,
-              },
-              null,
-              2
-            ),
-          },
-        ],
-      };
-    }
-  );
-
-  // Stateless transport — no session tracking needed
-  const transport = new StreamableHTTPServerTransport({
-    sessionIdGenerator: undefined,
-  });
-
-  await mcpServer.connect(transport);
-
+export async function mcpRoutes(app: FastifyInstance) {
   const authPreHandler = { preHandler: app.verifyApiKey };
 
-  // POST /mcp — handles MCP JSON-RPC requests
+  // POST /mcp — session-aware routing
   app.post("/mcp", authPreHandler, async (request, reply) => {
+    const sessionId = request.headers["mcp-session-id"] as string | undefined;
+
+    // Existing session — route to its transport
+    if (sessionId && transports.has(sessionId)) {
+      reply.hijack();
+      await transports.get(sessionId)!.handleRequest(request.raw, reply.raw, request.body);
+      return;
+    }
+
+    // New session — must be an initialize request
+    if (!sessionId && isInitializeRequest(request.body)) {
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: () => randomUUID(),
+        onsessioninitialized: (sid) => {
+          transports.set(sid, transport);
+          mcpServers.set(sid, server);
+        },
+      });
+
+      transport.onclose = () => {
+        const sid = transport.sessionId;
+        if (sid) cleanupSession(sid);
+      };
+
+      const server = createMcpServer(app);
+      await server.connect(transport);
+
+      reply.hijack();
+      await transport.handleRequest(request.raw, reply.raw, request.body);
+      return;
+    }
+
+    // Invalid request
+    reply.status(400).send({
+      jsonrpc: "2.0",
+      error: { code: -32000, message: "Bad Request: No valid session ID provided" },
+      id: null,
+    });
+  });
+
+  // GET /mcp — SSE stream for server-push notifications
+  app.get("/mcp", authPreHandler, async (request, reply) => {
+    const sessionId = request.headers["mcp-session-id"] as string | undefined;
+    if (!sessionId || !transports.has(sessionId)) {
+      return reply.status(400).send({
+        jsonrpc: "2.0",
+        error: { code: -32000, message: "Invalid or missing session ID" },
+        id: null,
+      });
+    }
     reply.hijack();
-    await transport.handleRequest(request.raw, reply.raw, request.body);
+    await transports.get(sessionId)!.handleRequest(request.raw, reply.raw);
   });
 
-  // GET /mcp — not needed for stateless, return 405
-  app.get("/mcp", authPreHandler, async (_request, reply) => {
-    reply.status(405).send({
-      jsonrpc: "2.0",
-      error: { code: -32000, message: "Method not allowed." },
-      id: null,
-    });
+  // DELETE /mcp — session cleanup
+  app.delete("/mcp", authPreHandler, async (request, reply) => {
+    const sessionId = request.headers["mcp-session-id"] as string | undefined;
+    if (!sessionId || !transports.has(sessionId)) {
+      return reply.status(400).send({
+        jsonrpc: "2.0",
+        error: { code: -32000, message: "Invalid or missing session ID" },
+        id: null,
+      });
+    }
+    reply.hijack();
+    await transports.get(sessionId)!.handleRequest(request.raw, reply.raw);
   });
 
-  // DELETE /mcp — not needed for stateless, return 405
-  app.delete("/mcp", authPreHandler, async (_request, reply) => {
-    reply.status(405).send({
-      jsonrpc: "2.0",
-      error: { code: -32000, message: "Method not allowed." },
-      id: null,
-    });
+  // Cleanup all sessions on server shutdown
+  app.addHook("onClose", async () => {
+    for (const [sid] of transports) {
+      cleanupSession(sid);
+    }
   });
 }

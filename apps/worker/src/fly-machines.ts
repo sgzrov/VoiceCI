@@ -8,6 +8,7 @@ interface MachineConfig {
   cpuKind?: string;
   cpus?: number;
   memoryMb?: number;
+  initCmd?: string[];
 }
 
 interface Machine {
@@ -35,6 +36,7 @@ export async function createMachine(config: MachineConfig): Promise<string> {
         config: {
           image: config.image,
           env: config.env,
+          ...(config.initCmd ? { init: { cmd: config.initCmd } } : {}),
           guest: {
             cpu_kind: config.cpuKind ?? "shared",
             cpus: config.cpus ?? 1,

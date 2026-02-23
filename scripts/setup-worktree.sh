@@ -3,7 +3,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-ENV_SOURCE="$HOME/.config/voiceci/.env"
+VOICECI_CONFIG_DIR="$HOME/.config/voiceci"
+ENV_SOURCE="$VOICECI_CONFIG_DIR/.env"
 
 cd "$PROJECT_ROOT"
 
@@ -42,6 +43,12 @@ copy_env_file() {
       cp .env.example "$filename"
       echo "    Created $filename from .env.example (fill in your secrets)"
     fi
+  fi
+
+  # Persist to centralized config so future workspaces get real values
+  if [ -f "$filename" ]; then
+    mkdir -p "$VOICECI_CONFIG_DIR"
+    cp "$filename" "$fallback"
   fi
 }
 

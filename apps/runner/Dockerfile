@@ -1,5 +1,8 @@
 FROM node:20-slim AS base
 RUN corepack enable && apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+# crane for OCI image manipulation (builder mode appends node_modules layer without Docker daemon)
+RUN curl -sL "https://github.com/google/go-containerregistry/releases/download/v0.20.2/go-containerregistry_Linux_x86_64.tar.gz" \
+    | tar xz -C /usr/local/bin crane
 
 FROM base AS build
 WORKDIR /app
@@ -7,7 +10,6 @@ COPY pnpm-workspace.yaml package.json pnpm-lock.yaml* .npmrc ./
 COPY packages/shared/package.json packages/shared/package.json
 COPY packages/voice/package.json packages/voice/package.json
 COPY packages/adapters/package.json packages/adapters/package.json
-COPY packages/artifacts/package.json packages/artifacts/package.json
 COPY apps/runner/package.json apps/runner/package.json
 RUN pnpm install --frozen-lockfile
 COPY packages packages
@@ -16,7 +18,6 @@ COPY tsconfig.json tsconfig.json
 RUN pnpm --filter @voiceci/shared build
 RUN pnpm --filter @voiceci/voice build
 RUN pnpm --filter @voiceci/adapters build
-RUN pnpm --filter @voiceci/artifacts build
 RUN pnpm --filter @voiceci/runner build
 
 FROM base AS runtime

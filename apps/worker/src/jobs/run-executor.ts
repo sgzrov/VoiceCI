@@ -9,7 +9,6 @@ interface RunJob {
   bundle_key: string | null;
   bundle_hash: string | null;
   lockfile_hash: string | null;
-  mode?: string;
   adapter?: string;
   test_spec?: Record<string, unknown>;
   target_phone_number?: string;

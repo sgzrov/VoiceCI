@@ -184,8 +184,6 @@ export const VoiceCIConfigSchema = z.object({
   agent: z.object({
     name: z.string().min(1),
     description: z.string().min(1),
-    system_prompt_file: z.string().optional(),
-    language: z.string().default("en"),
   }),
   connection: z.object({
     adapter: AdapterTypeSchema,
@@ -200,12 +198,6 @@ export const VoiceCIConfigSchema = z.object({
       stt: z.object({ api_key_env: z.string().optional() }).optional(),
       silence_threshold_ms: z.number().optional(),
       webrtc: z.object({ room: z.string().optional() }).optional(),
-    })
-    .optional(),
-  testing: z
-    .object({
-      max_parallel_runs: z.number().int().min(1).max(50).default(20),
-      default_max_turns: z.number().int().min(1).max(50).default(10),
     })
     .optional(),
 });

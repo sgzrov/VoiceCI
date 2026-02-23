@@ -4,7 +4,6 @@ export type SourceType = "bundle" | "remote";
 export interface VoiceConfig {
   tts?: { voice_id?: string; api_key_env?: string };
   stt?: { api_key_env?: string };
-  audio?: { sample_rate?: number };
   silence_threshold_ms?: number;
   telephony?: {
     auth_id_env?: string;
@@ -198,8 +197,6 @@ export interface VoiceCIConfig {
   agent: {
     name: string;
     description: string;
-    system_prompt_file?: string;
-    language?: string;
   };
   connection: {
     adapter: AdapterType;
@@ -209,8 +206,4 @@ export interface VoiceCIConfig {
     agent_url?: string;
   };
   voice?: VoiceConfig;
-  testing?: {
-    max_parallel_runs?: number;
-    default_max_turns?: number;
-  };
 }

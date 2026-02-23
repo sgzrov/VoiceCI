@@ -13,7 +13,6 @@ const worker = new Worker(
       bundle_key: string | null;
       bundle_hash: string | null;
       lockfile_hash?: string | null;
-      mode?: string;
       adapter?: string;
       test_spec?: Record<string, unknown>;
       target_phone_number?: string;
@@ -24,13 +23,12 @@ const worker = new Worker(
       agent_url?: string;
     };
 
-    console.log(`Processing run ${data.run_id} (adapter: ${data.adapter ?? data.mode ?? "unknown"})`);
+    console.log(`Processing run ${data.run_id} (adapter: ${data.adapter ?? "unknown"})`);
     await executeRun({
       run_id: data.run_id,
       bundle_key: data.bundle_key,
       bundle_hash: data.bundle_hash,
       lockfile_hash: data.lockfile_hash ?? null,
-      mode: data.mode,
       adapter: data.adapter,
       test_spec: data.test_spec,
       target_phone_number: data.target_phone_number,

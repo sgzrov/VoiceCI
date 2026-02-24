@@ -10,6 +10,7 @@
  */
 
 import { EventEmitter } from "node:events";
+import type { ObservedToolCall } from "@voiceci/shared";
 
 export interface AudioChannelEvents {
   audio: (chunk: Buffer) => void;
@@ -23,6 +24,9 @@ export interface AudioChannel {
   sendAudio(pcm: Buffer): void;
   disconnect(): Promise<void>;
   readonly connected: boolean;
+
+  /** Get tool call data after call ends. Platform adapters pull from API, ws-voice returns collected events. */
+  getCallData?(): Promise<ObservedToolCall[]>;
 
   on<E extends keyof AudioChannelEvents>(event: E, listener: AudioChannelEvents[E]): this;
   off<E extends keyof AudioChannelEvents>(event: E, listener: AudioChannelEvents[E]): this;

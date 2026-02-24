@@ -10,7 +10,7 @@
  */
 
 import Anthropic from "@anthropic-ai/sdk";
-import type { ConversationTurn, EvalResult, BehavioralMetrics } from "@voiceci/shared";
+import type { ConversationTurn, EvalResult, BehavioralMetrics, ObservedToolCall } from "@voiceci/shared";
 
 const MODEL = "claude-sonnet-4-6-20250514";
 const MAX_TOKENS = 300;
@@ -18,6 +18,20 @@ const MAX_TOKENS = 300;
 function formatTranscript(transcript: ConversationTurn[]): string {
   return transcript
     .map((t) => `${t.role.toUpperCase()}: ${t.text}`)
+    .join("\n");
+}
+
+function formatToolCalls(toolCalls: ObservedToolCall[]): string {
+  if (toolCalls.length === 0) return "(no tool calls observed)";
+
+  return toolCalls
+    .map((tc, i) => {
+      const args = JSON.stringify(tc.arguments);
+      const result = tc.result != null ? ` → ${JSON.stringify(tc.result)}` : "";
+      const timing = tc.latency_ms != null ? ` [${tc.latency_ms}ms]` : "";
+      const success = tc.successful != null ? (tc.successful ? " [successful]" : " [failed]") : "";
+      return `${i + 1}. ${tc.name}(${args})${result}${timing}${success}`;
+    })
     .join("\n");
 }
 
@@ -103,6 +117,80 @@ Metric definitions:
     } catch {
       console.warn("Failed to parse behavioral metrics from judge:", text.slice(0, 200));
       return {};
+    }
+  }
+
+  /**
+   * Evaluate tool call behavior against eval questions.
+   * Provides both transcript AND structured tool call data to the judge.
+   */
+  async evaluateToolCalls(
+    transcript: ConversationTurn[],
+    observedToolCalls: ObservedToolCall[],
+    evalQuestions: string[],
+  ): Promise<EvalResult[]> {
+    const formattedTranscript = formatTranscript(transcript);
+    const formattedToolCalls = formatToolCalls(observedToolCalls);
+    const context = `TRANSCRIPT:\n${formattedTranscript}\n\nTOOL CALLS OBSERVED:\n${formattedToolCalls}`;
+
+    const results: EvalResult[] = [];
+
+    for (const question of evalQuestions) {
+      const result = await this.evaluateToolCallQuestion(context, question);
+      results.push(result);
+    }
+
+    return results;
+  }
+
+  private async evaluateToolCallQuestion(
+    context: string,
+    question: string,
+  ): Promise<EvalResult> {
+    const response = await this.client.messages.create({
+      model: MODEL,
+      max_tokens: MAX_TOKENS,
+      temperature: 0,
+      system: `You are evaluating a voice agent's tool call behavior. You have access to:
+1. The conversation transcript (what was said)
+2. The actual tool calls that the agent made (ground truth data from the platform)
+
+Based on BOTH the transcript AND the tool call data, determine if the agent PASSES or FAILS the given criterion.
+
+Be strict but fair. Use the tool call data as ground truth — it shows exactly which tools were called, with what arguments, and what results were returned.
+
+Respond with ONLY a JSON object: {"relevant": true/false, "passed": true/false, "reasoning": "brief explanation"}
+
+Set "relevant" to false if the conversation didn't touch on the subject of the criterion.`,
+      messages: [
+        {
+          role: "user",
+          content: `${context}\n\nCRITERION: ${question}`,
+        },
+      ],
+    });
+
+    const text = response.content[0]?.type === "text" ? response.content[0].text : "";
+
+    try {
+      const parsed = JSON.parse(text) as {
+        relevant: boolean;
+        passed: boolean;
+        reasoning: string;
+      };
+      return {
+        question,
+        relevant: parsed.relevant,
+        passed: parsed.relevant ? parsed.passed : true,
+        reasoning: parsed.reasoning,
+      };
+    } catch {
+      return {
+        question,
+        relevant: true,
+        passed: false,
+        reasoning: "Failed to parse judge response",
+      };
     }
   }
 

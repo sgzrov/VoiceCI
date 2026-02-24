@@ -12,6 +12,7 @@ export const ConversationTestSpecSchema = z.object({
   caller_prompt: z.string().min(1),
   max_turns: z.number().int().min(1).max(50).default(10),
   eval: z.array(z.string().min(1)).min(1),
+  tool_call_eval: z.array(z.string().min(1)).optional(),
   silence_threshold_ms: z.number().int().min(200).max(10000).optional(),
 });
 
@@ -25,7 +26,34 @@ export const TestSpecSchema = z
     { message: "At least one audio_test or conversation_test is required" }
   );
 
-export const AdapterTypeSchema = z.enum(["ws-voice", "sip", "webrtc"]);
+export const AdapterTypeSchema = z.enum(["ws-voice", "sip", "webrtc", "vapi", "retell", "elevenlabs", "bland"]);
+
+// ============================================================
+// Tool call schemas
+// ============================================================
+
+export const ObservedToolCallSchema = z.object({
+  name: z.string(),
+  arguments: z.record(z.unknown()),
+  result: z.unknown().optional(),
+  successful: z.boolean().optional(),
+  timestamp_ms: z.number().optional(),
+  latency_ms: z.number().optional(),
+});
+
+export const ToolCallMetricsSchema = z.object({
+  total: z.number().int().min(0),
+  successful: z.number().int().min(0),
+  failed: z.number().int().min(0),
+  mean_latency_ms: z.number().optional(),
+  names: z.array(z.string()),
+});
+
+export const PlatformConfigSchema = z.object({
+  provider: z.enum(["vapi", "retell", "elevenlabs", "bland"]),
+  api_key_env: z.string(),
+  agent_id: z.string().optional(),
+});
 
 export const AudioTestThresholdsSchema = z.object({
   echo: z.object({ loop_threshold: z.number().int().min(1).optional() }).optional(),
@@ -96,6 +124,7 @@ export const ConversationMetricsSchema = z.object({
   transcript: TranscriptMetricsSchema.optional(),
   latency: LatencyMetricsSchema.optional(),
   behavioral: BehavioralMetricsSchema.optional(),
+  tool_calls: ToolCallMetricsSchema.optional(),
 });
 
 export const AudioTestResultSchema = z.object({
@@ -112,6 +141,8 @@ export const ConversationTestResultSchema = z.object({
   status: z.enum(["pass", "fail"]),
   transcript: z.array(ConversationTurnSchema),
   eval_results: z.array(EvalResultSchema),
+  tool_call_eval_results: z.array(EvalResultSchema).optional(),
+  observed_tool_calls: z.array(ObservedToolCallSchema).optional(),
   duration_ms: z.number(),
   metrics: ConversationMetricsSchema,
 });

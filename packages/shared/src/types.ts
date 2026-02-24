@@ -33,14 +33,42 @@ export const AUDIO_TEST_NAMES = [
 
 export type AudioTestName = (typeof AUDIO_TEST_NAMES)[number];
 
-export type AdapterType = "ws-voice" | "sip" | "webrtc";
+export type AdapterType = "ws-voice" | "sip" | "webrtc" | "vapi" | "retell" | "elevenlabs" | "bland";
 
 export interface ConversationTestSpec {
   name?: string;
   caller_prompt: string;
   max_turns: number;
   eval: string[];
+  tool_call_eval?: string[];
   silence_threshold_ms?: number;
+}
+
+// ============================================================
+// Tool call types
+// ============================================================
+
+export interface ObservedToolCall {
+  name: string;
+  arguments: Record<string, unknown>;
+  result?: unknown;
+  successful?: boolean;
+  timestamp_ms?: number;
+  latency_ms?: number;
+}
+
+export interface ToolCallMetrics {
+  total: number;
+  successful: number;
+  failed: number;
+  mean_latency_ms?: number;
+  names: string[];
+}
+
+export interface PlatformConfig {
+  provider: "vapi" | "retell" | "elevenlabs" | "bland";
+  api_key_env: string;
+  agent_id?: string;
 }
 
 export interface AudioTestThresholds {
@@ -125,6 +153,7 @@ export interface ConversationMetrics {
   transcript?: TranscriptMetrics;
   latency?: LatencyMetrics;
   behavioral?: BehavioralMetrics;
+  tool_calls?: ToolCallMetrics;
 }
 
 export interface ConversationTestResult {
@@ -133,6 +162,8 @@ export interface ConversationTestResult {
   status: "pass" | "fail";
   transcript: ConversationTurn[];
   eval_results: EvalResult[];
+  tool_call_eval_results?: EvalResult[];
+  observed_tool_calls?: ObservedToolCall[];
   duration_ms: number;
   metrics: ConversationMetrics;
 }

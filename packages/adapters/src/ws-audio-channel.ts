@@ -2,19 +2,34 @@
  * WebSocket Audio Channel
  *
  * Raw bidirectional PCM audio over WebSocket.
- * Extracted from ws-voice-adapter.ts — no TTS/STT/silence logic.
+ * Supports JSON text frames for tool call events alongside binary audio.
+ *
+ * Binary frames → audio (PCM 16-bit 24kHz mono)
+ * Text frames   → JSON events (tool_call, etc.)
  */
 
 import WebSocket from "ws";
+import type { ObservedToolCall } from "@voiceci/shared";
 import { BaseAudioChannel } from "./audio-channel.js";
 
 export interface WsAudioChannelConfig {
   wsUrl: string;
 }
 
+interface WsToolCallEvent {
+  type: "tool_call";
+  name: string;
+  arguments?: Record<string, unknown>;
+  result?: unknown;
+  successful?: boolean;
+  duration_ms?: number;
+}
+
 export class WsAudioChannel extends BaseAudioChannel {
   private ws: WebSocket | null = null;
   private config: WsAudioChannelConfig;
+  private toolCalls: ObservedToolCall[] = [];
+  private connectTimestamp = 0;
 
   constructor(config: WsAudioChannelConfig) {
     super();
@@ -32,11 +47,17 @@ export class WsAudioChannel extends BaseAudioChannel {
 
       ws.on("open", () => {
         this.ws = ws;
+        this.connectTimestamp = Date.now();
+        this.toolCalls = [];
 
-        ws.on("message", (data: WebSocket.RawData) => {
-          const chunk =
-            data instanceof Buffer ? data : Buffer.from(data as ArrayBuffer);
-          this.emit("audio", chunk);
+        ws.on("message", (data: WebSocket.RawData, isBinary: boolean) => {
+          if (isBinary) {
+            const chunk =
+              data instanceof Buffer ? data : Buffer.from(data as ArrayBuffer);
+            this.emit("audio", chunk);
+          } else {
+            this.handleTextFrame(data.toString());
+          }
         });
 
         ws.on("error", (err) => {
@@ -68,6 +89,28 @@ export class WsAudioChannel extends BaseAudioChannel {
     if (this.ws) {
       this.ws.close();
       this.ws = null;
+    }
+  }
+
+  async getCallData(): Promise<ObservedToolCall[]> {
+    return this.toolCalls;
+  }
+
+  private handleTextFrame(text: string): void {
+    try {
+      const event = JSON.parse(text) as WsToolCallEvent;
+      if (event.type === "tool_call" && event.name) {
+        this.toolCalls.push({
+          name: event.name,
+          arguments: event.arguments ?? {},
+          result: event.result,
+          successful: event.successful,
+          timestamp_ms: Date.now() - this.connectTimestamp,
+          latency_ms: event.duration_ms,
+        });
+      }
+    } catch {
+      // Ignore malformed JSON
     }
   }
 }

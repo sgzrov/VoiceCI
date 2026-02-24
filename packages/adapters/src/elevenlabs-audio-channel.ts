@@ -1,0 +1,259 @@
+/**
+ * ElevenLabs Conversational AI Audio Channel
+ *
+ * Connects to ElevenLabs' Conversational AI via WebSocket, exchanges
+ * base64-encoded audio, and pulls tool call data after via their REST API.
+ *
+ * ElevenLabs uses 16kHz PCM audio encoded as base64 in JSON messages.
+ * We convert between 24kHz (our standard) and 16kHz (ElevenLabs' format).
+ */
+
+import WebSocket from "ws";
+import type { ObservedToolCall } from "@voiceci/shared";
+import { BaseAudioChannel } from "./audio-channel.js";
+
+export interface ElevenLabsAudioChannelConfig {
+  apiKey: string;
+  agentId: string;
+}
+
+interface ElevenLabsServerMessage {
+  type: string;
+  conversation_id?: string;
+  audio?: {
+    chunk?: string; // base64
+    sample_rate?: number;
+  };
+  agent_output_audio_format?: string;
+  user_input_audio_format?: string;
+}
+
+interface ElevenLabsConversationMessage {
+  role: string;
+  message?: string;
+  tool_calls?: Array<{
+    name: string;
+    params?: Record<string, unknown>;
+    tool_call_id?: string;
+  }>;
+  tool_results?: Array<{
+    tool_call_id?: string;
+    result?: unknown;
+    error?: string;
+  }>;
+  time_in_call_secs?: number;
+}
+
+interface ElevenLabsConversationResponse {
+  conversation_id: string;
+  status: string;
+  transcript?: ElevenLabsConversationMessage[];
+}
+
+export class ElevenLabsAudioChannel extends BaseAudioChannel {
+  private config: ElevenLabsAudioChannelConfig;
+  private ws: WebSocket | null = null;
+  private conversationId: string | null = null;
+
+  constructor(config: ElevenLabsAudioChannelConfig) {
+    super();
+    this.config = config;
+  }
+
+  get connected(): boolean {
+    return this.ws?.readyState === WebSocket.OPEN;
+  }
+
+  async connect(): Promise<void> {
+    const wsUrl = `wss://api.elevenlabs.io/v1/convai/conversation?agent_id=${this.config.agentId}`;
+
+    return new Promise((resolve, reject) => {
+      const ws = new WebSocket(wsUrl, {
+        headers: {
+          "xi-api-key": this.config.apiKey,
+        },
+      });
+
+      const timeout = setTimeout(() => {
+        ws.close();
+        reject(new Error("ElevenLabs WebSocket connection timed out"));
+      }, 30_000);
+
+      ws.on("open", () => {
+        this.ws = ws;
+
+        // Send conversation initiation
+        ws.send(JSON.stringify({
+          type: "conversation_initiation_client_data",
+          conversation_config_override: {},
+        }));
+
+        ws.on("message", (data: WebSocket.RawData) => {
+          const text = data.toString();
+          try {
+            const msg = JSON.parse(text) as ElevenLabsServerMessage;
+            this.handleServerMessage(msg);
+
+            // Resolve once we get the conversation metadata
+            if (msg.type === "conversation_initiation_metadata" && msg.conversation_id) {
+              this.conversationId = msg.conversation_id;
+              clearTimeout(timeout);
+              resolve();
+            }
+          } catch {
+            // Ignore malformed messages
+          }
+        });
+
+        ws.on("error", (err) => {
+          clearTimeout(timeout);
+          this.emit("error", err);
+        });
+
+        ws.on("close", () => {
+          this.ws = null;
+          this.emit("disconnected");
+        });
+      });
+
+      ws.on("error", (err) => {
+        clearTimeout(timeout);
+        reject(new Error(`ElevenLabs WebSocket connection failed: ${err.message}`));
+      });
+    });
+  }
+
+  sendAudio(pcm: Buffer): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      throw new Error("ElevenLabs WebSocket not connected");
+    }
+
+    // Resample 24kHz → 16kHz, then base64 encode
+    const pcm16k = resample24kTo16k(pcm);
+    const base64Audio = pcm16k.toString("base64");
+
+    this.ws.send(JSON.stringify({
+      user_audio_chunk: base64Audio,
+    }));
+  }
+
+  async disconnect(): Promise<void> {
+    if (this.ws) {
+      this.ws.close();
+      this.ws = null;
+    }
+  }
+
+  async getCallData(): Promise<ObservedToolCall[]> {
+    if (!this.conversationId) return [];
+
+    // Wait for ElevenLabs to process the conversation data
+    await sleep(2000);
+
+    const res = await fetch(
+      `https://api.elevenlabs.io/v1/convai/conversations/${this.conversationId}`,
+      {
+        headers: { "xi-api-key": this.config.apiKey },
+      },
+    );
+
+    if (!res.ok) return [];
+
+    const data = (await res.json()) as ElevenLabsConversationResponse;
+    return this.parseToolCalls(data);
+  }
+
+  private handleServerMessage(msg: ElevenLabsServerMessage): void {
+    if (msg.type === "audio" && msg.audio?.chunk) {
+      // Decode base64 audio and resample 16kHz → 24kHz
+      const pcm16k = Buffer.from(msg.audio.chunk, "base64");
+      const pcm24k = resample16kTo24k(pcm16k);
+      this.emit("audio", pcm24k);
+    }
+  }
+
+  private parseToolCalls(data: ElevenLabsConversationResponse): ObservedToolCall[] {
+    const messages = data.transcript ?? [];
+    const toolCalls: ObservedToolCall[] = [];
+
+    // Build result map keyed by tool_call_id
+    const resultMap = new Map<string, { result?: unknown; error?: string; time?: number }>();
+    for (const msg of messages) {
+      if (msg.tool_results) {
+        for (const tr of msg.tool_results) {
+          if (tr.tool_call_id) {
+            resultMap.set(tr.tool_call_id, {
+              result: tr.result,
+              error: tr.error,
+              time: msg.time_in_call_secs,
+            });
+          }
+        }
+      }
+    }
+
+    for (const msg of messages) {
+      if (msg.tool_calls) {
+        for (const tc of msg.tool_calls) {
+          const resultEntry = tc.tool_call_id ? resultMap.get(tc.tool_call_id) : undefined;
+          const timestampMs = msg.time_in_call_secs != null ? msg.time_in_call_secs * 1000 : undefined;
+          const resultTimeMs = resultEntry?.time != null ? resultEntry.time * 1000 : undefined;
+
+          toolCalls.push({
+            name: tc.name,
+            arguments: tc.params ?? {},
+            result: resultEntry?.result,
+            successful: resultEntry ? !resultEntry.error : undefined,
+            timestamp_ms: timestampMs,
+            latency_ms:
+              timestampMs != null && resultTimeMs != null
+                ? resultTimeMs - timestampMs
+                : undefined,
+          });
+        }
+      }
+    }
+
+    return toolCalls;
+  }
+}
+
+/** Simple linear interpolation resample from 24kHz to 16kHz (16-bit PCM) */
+function resample24kTo16k(pcm24k: Buffer): Buffer {
+  const samples24 = new Int16Array(pcm24k.buffer, pcm24k.byteOffset, pcm24k.byteLength / 2);
+  const numSamples16 = Math.floor(samples24.length * 16000 / 24000);
+  const samples16 = new Int16Array(numSamples16);
+
+  for (let i = 0; i < numSamples16; i++) {
+    const srcIndex = (i * 24000) / 16000;
+    const idx = Math.floor(srcIndex);
+    const frac = srcIndex - idx;
+    const s0 = samples24[idx]!;
+    const s1 = idx + 1 < samples24.length ? samples24[idx + 1]! : s0;
+    samples16[i] = Math.round(s0 + frac * (s1 - s0));
+  }
+
+  return Buffer.from(samples16.buffer);
+}
+
+/** Simple linear interpolation resample from 16kHz to 24kHz (16-bit PCM) */
+function resample16kTo24k(pcm16k: Buffer): Buffer {
+  const samples16 = new Int16Array(pcm16k.buffer, pcm16k.byteOffset, pcm16k.byteLength / 2);
+  const numSamples24 = Math.floor(samples16.length * 24000 / 16000);
+  const samples24 = new Int16Array(numSamples24);
+
+  for (let i = 0; i < numSamples24; i++) {
+    const srcIndex = (i * 16000) / 24000;
+    const idx = Math.floor(srcIndex);
+    const frac = srcIndex - idx;
+    const s0 = samples16[idx]!;
+    const s1 = idx + 1 < samples16.length ? samples16[idx + 1]! : s0;
+    samples24[i] = Math.round(s0 + frac * (s1 - s0));
+  }
+
+  return Buffer.from(samples24.buffer);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}

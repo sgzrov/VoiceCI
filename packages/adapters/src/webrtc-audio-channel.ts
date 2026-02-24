@@ -5,6 +5,10 @@
  * receives agent audio via AudioStream. Handles 24kHz <-> 48kHz
  * resampling internally (LiveKit uses 48kHz by default).
  *
+ * Supports tool call capture via DataChannel on topic "voiceci:tool-calls".
+ * Agents emit JSON tool call events via publishData() or sendText(),
+ * and this adapter collects them for getCallData().
+ *
  * Extracted from webrtc-voice-adapter.ts — no TTS/STT/silence logic.
  */
 
@@ -24,7 +28,17 @@ import {
 } from "@livekit/rtc-node";
 import { AccessToken } from "livekit-server-sdk";
 import { resample } from "@voiceci/voice";
+import type { ObservedToolCall } from "@voiceci/shared";
 import { BaseAudioChannel } from "./audio-channel.js";
+
+interface WsToolCallEvent {
+  type: "tool_call";
+  name: string;
+  arguments?: Record<string, unknown>;
+  result?: unknown;
+  successful?: boolean;
+  duration_ms?: number;
+}
 
 export interface WebRtcAudioChannelConfig {
   livekitUrl: string;
@@ -36,12 +50,16 @@ export interface WebRtcAudioChannelConfig {
 }
 
 export class WebRtcAudioChannel extends BaseAudioChannel {
+  private static readonly TOOL_CALL_TOPIC = "voiceci:tool-calls";
+
   private config: WebRtcAudioChannelConfig;
   private room: Room | null = null;
   private audioSource: AudioSource | null = null;
   private localTrack: LocalAudioTrack | null = null;
   private livekitSampleRate: number;
   private collecting = false;
+  private toolCalls: ObservedToolCall[] = [];
+  private connectTimestamp = 0;
 
   constructor(config: WebRtcAudioChannelConfig) {
     super();
@@ -71,6 +89,24 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
     this.room = new Room();
     await this.room.connect(this.config.livekitUrl, jwt);
     this.collecting = true;
+    this.connectTimestamp = Date.now();
+    this.toolCalls = [];
+
+    // Subscribe to DataChannel for tool call events
+    this.room.on(
+      RoomEvent.DataReceived,
+      (payload: Uint8Array, _participant?: RemoteParticipant, _kind?: unknown, topic?: string) => {
+        if (topic === WebRtcAudioChannel.TOOL_CALL_TOPIC) {
+          this.handleToolCallData(payload);
+        }
+      }
+    );
+
+    // Also handle agents using sendText() (DataStream API)
+    this.room.registerTextStreamHandler(WebRtcAudioChannel.TOOL_CALL_TOPIC, async (reader) => {
+      const text = await reader.readAll();
+      this.handleToolCallText(text);
+    });
 
     // Set up audio source for publishing
     this.audioSource = new AudioSource(this.livekitSampleRate, 1);
@@ -126,6 +162,9 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
 
   async disconnect(): Promise<void> {
     this.collecting = false;
+    if (this.room) {
+      this.room.unregisterTextStreamHandler(WebRtcAudioChannel.TOOL_CALL_TOPIC);
+    }
     if (this.audioSource) {
       await this.audioSource.close();
       this.audioSource = null;
@@ -139,6 +178,37 @@ export class WebRtcAudioChannel extends BaseAudioChannel {
       this.room = null;
     }
     dispose();
+  }
+
+  async getCallData(): Promise<ObservedToolCall[]> {
+    return this.toolCalls;
+  }
+
+  private handleToolCallData(payload: Uint8Array): void {
+    try {
+      const text = new TextDecoder().decode(payload);
+      this.handleToolCallText(text);
+    } catch {
+      // Ignore malformed data
+    }
+  }
+
+  private handleToolCallText(text: string): void {
+    try {
+      const event = JSON.parse(text) as WsToolCallEvent;
+      if (event.type === "tool_call" && event.name) {
+        this.toolCalls.push({
+          name: event.name,
+          arguments: event.arguments ?? {},
+          result: event.result,
+          successful: event.successful,
+          timestamp_ms: Date.now() - this.connectTimestamp,
+          latency_ms: event.duration_ms,
+        });
+      }
+    } catch {
+      // Ignore malformed JSON
+    }
   }
 
   private startReadingTrack(track: RemoteTrack): void {

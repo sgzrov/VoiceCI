@@ -4,7 +4,7 @@ import { eq } from "drizzle-orm";
 import { schema } from "@voiceci/db";
 import { createStorageClient } from "@voiceci/artifacts";
 import { z } from "zod";
-import { AudioTestNameSchema, ConversationTestSpecSchema, AdapterTypeSchema, AudioTestThresholdsSchema, LoadPatternSchema } from "@voiceci/shared";
+import { AudioTestNameSchema, ConversationTestSpecSchema, AdapterTypeSchema, AudioTestThresholdsSchema, LoadPatternSchema, PlatformConfigSchema } from "@voiceci/shared";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
@@ -182,6 +182,150 @@ The adaptive system handles the cases where a fixed threshold fails:
 
 ---
 
+## Tool Call Testing
+
+Voice agents often make tool calls mid-conversation (CRM lookups, appointment booking, order status checks). VoiceCI captures **actual tool call data** — not inference from transcripts — so you can verify the agent called the right tools, with the right arguments, in the right order.
+
+### How Tool Call Data Is Captured
+
+| Adapter | How tool calls are captured | User effort |
+|---------|---------------------------|-------------|
+| \`vapi\` | Pulled from Vapi API after call (\`GET /call/{id}\`) | Zero — just provide API key + assistant ID |
+| \`retell\` | Pulled from Retell API after call (\`GET /v2/get-call/{id}\`) | Zero — just provide API key + agent ID |
+| \`elevenlabs\` | Pulled from ElevenLabs API after call (\`GET /v1/convai/conversations/{id}\`) | Zero — just provide API key + agent ID |
+| \`bland\` | Pulled from Bland API after call (\`GET /v1/calls/{id}\`) | Zero — just provide API key |
+| \`ws-voice\` | Agent sends JSON text frames on WebSocket alongside binary audio | ~5 lines of code in agent |
+| \`webrtc\` | Agent sends JSON events via LiveKit DataChannel (topic: \`voiceci:tool-calls\`) | ~5 lines of code in agent |
+| \`sip\` | Not available (no backchannel for tool call data) | N/A |
+
+### Platform Adapters (Vapi, Retell, ElevenLabs, Bland)
+
+For platform-hosted agents, VoiceCI creates the call via the platform's API, gets an exact call ID, exchanges audio over WebSocket/WebRTC, then pulls ground truth tool call data after the call.
+
+Set the \`platform\` config in run_suite:
+\`\`\`json
+{
+  "adapter": "vapi",
+  "platform": {
+    "provider": "vapi",
+    "api_key_env": "VAPI_API_KEY",
+    "agent_id": "your-assistant-id"
+  }
+}
+\`\`\`
+
+### Custom WebSocket Agents (ws-voice)
+
+For custom agents, the agent emits JSON text frames on the same WebSocket alongside binary audio:
+\`\`\`
+Binary frames → audio (unchanged, backward compatible)
+Text frames   → JSON events (tool calls)
+\`\`\`
+
+JSON format for tool call events:
+\`\`\`json
+{"type":"tool_call","name":"lookup_order","arguments":{"order_id":"12345"},"result":{"status":"shipped"},"successful":true,"duration_ms":150}
+\`\`\`
+
+### WebRTC / LiveKit Agents
+
+For LiveKit-based agents, tool call events are sent via LiveKit's DataChannel on topic \`voiceci:tool-calls\`. The agent can use either API:
+
+**Option A — publishData() (recommended):**
+\`\`\`python
+await room.local_participant.publish_data(
+    json.dumps({"type":"tool_call","name":"lookup_order","arguments":{"order_id":"12345"},"result":{"status":"shipped"},"successful":true,"duration_ms":150}).encode(),
+    reliable=True,
+    topic="voiceci:tool-calls",
+)
+\`\`\`
+
+**Option B — sendText() (DataStream API):**
+\`\`\`python
+await room.local_participant.send_text(
+    json.dumps({"type":"tool_call","name":"lookup_order",...}),
+    topic="voiceci:tool-calls",
+)
+\`\`\`
+
+Same JSON format as ws-voice. If the agent doesn't send any data channel messages, tool call testing is skipped gracefully.
+
+### Pipeline Agents (STT → LLM → TTS)
+
+Some voice agents use a **pipeline architecture** — separate services for STT (e.g., Deepgram), LLM (e.g., GPT/Gemini), and TTS (e.g., ElevenLabs), orchestrated by the app. These agents have no single WebSocket endpoint to connect to.
+
+**To test pipeline agents, generate a WebSocket wrapper** around their existing pipeline. Read the user's code to understand:
+1. How audio is sent to STT (Deepgram, Whisper, etc.)
+2. How the transcript is sent to the LLM
+3. How the LLM response is sent to TTS
+4. How tool calls are handled between STT and TTS
+
+Then generate a thin WebSocket server (~50 lines) that:
+- Accepts a WebSocket connection
+- Receives binary PCM audio → sends to their STT
+- Sends transcript to their LLM
+- Sends LLM response to their TTS
+- Streams TTS audio back as binary PCM
+- Emits tool call JSON text frames when tools execute
+
+\`\`\`python
+# Example wrapper structure (adapt to user's actual pipeline code)
+async def handle_ws(ws):
+    async for message in ws:
+        if isinstance(message, bytes):
+            transcript = await stt_service.transcribe(message)
+            llm_response = await llm_service.chat(transcript)
+            # If tool calls happened, emit them
+            for tool_call in llm_response.tool_calls:
+                await ws.send(json.dumps({"type":"tool_call","name":tool_call.name,...}))
+            audio = await tts_service.synthesize(llm_response.text)
+            await ws.send(audio)  # binary PCM
+\`\`\`
+
+**Important**: Read the user's existing pipeline code first. Do NOT guess the architecture — look at their STT client, LLM calls, TTS integration, and tool execution to generate the correct wrapper. The wrapper should import and call their existing functions, not reimplement them.
+
+Once the wrapper is running, test it with \`adapter: "ws-voice"\` pointing at the wrapper's URL.
+
+### Auto-Instrumenting Tool Calls
+
+For any agent where tool calls happen in user code (ws-voice, webrtc, pipeline), you can **read the user's codebase** and add tool call instrumentation automatically. Look for:
+- Function call handlers (OpenAI Realtime API \`response.function_call_arguments.done\`)
+- Pipecat \`FunctionCallInProgress\` handlers
+- LangChain tool executors
+- Custom tool dispatch logic
+
+Add a single line per tool function to emit the JSON event. This is VoiceCI's key advantage — the user doesn't need to configure anything manually.
+
+### Writing tool_call_eval Questions
+
+Add \`tool_call_eval\` to conversation tests. These are evaluated by the Judge LLM with access to **both** the transcript AND the raw tool call data.
+
+\`\`\`json
+{
+  "caller_prompt": "You are Sarah calling about order 12345...",
+  "eval": ["Did the agent greet professionally?"],
+  "tool_call_eval": [
+    "Did the agent call a lookup/search tool with order ID 12345?",
+    "Did the agent correctly relay the order status from the tool result?",
+    "Were tools called in the correct order (lookup before cancel)?",
+    "Did the agent handle the tool error gracefully?"
+  ]
+}
+\`\`\`
+
+**Key advantage**: You have access to the user's codebase. Read their tool implementation code (webhook handlers, function schemas) to generate targeted \`tool_call_eval\` questions that test real edge cases, parameter handling, and error paths.
+
+### Interpreting Tool Call Results
+
+Results include:
+- \`observed_tool_calls\`: Array of every tool call made — name, arguments, result, latency, success
+- \`tool_call_eval_results\`: Judge's evaluation of each \`tool_call_eval\` question
+- \`metrics.tool_calls\`: Aggregate metrics — total, successful, failed, mean latency, tool names
+
+When a tool call eval fails, correlate the \`observed_tool_calls\` data with the user's source code to diagnose the root cause and suggest a fix.
+
+---
+
 ## Iterative Testing Strategy
 
 Testing is NOT single-shot. You should iterate based on results. The \`bundle_key\` from prepare_upload is reusable across runs — no need to re-upload.
@@ -318,7 +462,10 @@ function createMcpServer(app: FastifyInstance, apiKeyId: string): McpServer {
         .optional()
         .describe("SHA-256 hash of lockfile from prepare_upload output. Enables dependency prebaking for instant subsequent runs."),
       adapter: AdapterTypeSchema.describe(
-        "Transport: ws-voice (WebSocket), sip (phone via Plivo), or webrtc (LiveKit)"
+        "Transport: ws-voice (WebSocket), sip (phone via Plivo), webrtc (LiveKit), vapi (Vapi platform), retell (Retell platform), elevenlabs (ElevenLabs platform), bland (Bland platform)"
+      ),
+      platform: PlatformConfigSchema.optional().describe(
+        "Platform config for vapi/retell/elevenlabs/bland adapters. Required for platform adapters."
       ),
       audio_tests: z
         .array(AudioTestNameSchema)
@@ -363,6 +510,7 @@ function createMcpServer(app: FastifyInstance, apiKeyId: string): McpServer {
         bundle_hash,
         lockfile_hash,
         adapter,
+        platform,
         audio_tests,
         conversation_tests,
         start_command,
@@ -390,8 +538,24 @@ function createMcpServer(app: FastifyInstance, apiKeyId: string): McpServer {
         };
       }
 
+      // Platform adapters are already deployed (the platform hosts the agent)
+      const isPlatformAdapter = adapter === "vapi" || adapter === "retell" || adapter === "elevenlabs" || adapter === "bland";
+
+      // Validate platform config for platform adapters
+      if (isPlatformAdapter && !platform) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Error: platform config is required for ${adapter} adapter. Provide {provider, api_key_env, agent_id}.`,
+            },
+          ],
+          isError: true,
+        };
+      }
+
       // Validate bundle for ws-voice (unless agent_url provided)
-      const isAlreadyDeployed = adapter === "sip" || adapter === "webrtc" || !!agent_url;
+      const isAlreadyDeployed = isPlatformAdapter || adapter === "sip" || adapter === "webrtc" || !!agent_url;
       if (!isAlreadyDeployed && (!bundle_key || !bundle_hash)) {
         return {
           content: [
@@ -446,6 +610,7 @@ function createMcpServer(app: FastifyInstance, apiKeyId: string): McpServer {
         start_command,
         health_endpoint,
         agent_url,
+        platform: platform ?? null,
       });
 
       return {

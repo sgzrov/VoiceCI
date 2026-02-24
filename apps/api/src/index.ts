@@ -1,5 +1,7 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
+import { eq, lt, and } from "drizzle-orm";
+import { schema } from "@voiceci/db";
 import { healthRoutes } from "./routes/health.js";
 import { uploadRoutes } from "./routes/uploads.js";
 import { runRoutes } from "./routes/runs.js";
@@ -36,6 +38,40 @@ async function main() {
 
   await app.listen({ port, host });
   console.log(`VoiceCI API listening on ${host}:${port}`);
+
+  // Stuck run cleanup — mark runs stuck in "running" for >10 minutes as failed
+  const CLEANUP_INTERVAL_MS = 60_000;
+  const STUCK_THRESHOLD_MS = 10 * 60_000;
+
+  const cleanupInterval = setInterval(async () => {
+    try {
+      const cutoff = new Date(Date.now() - STUCK_THRESHOLD_MS);
+      const stuck = await app.db
+        .update(schema.runs)
+        .set({
+          status: "fail",
+          finished_at: new Date(),
+          error_text: "Run timed out (server may have restarted)",
+        })
+        .where(
+          and(
+            eq(schema.runs.status, "running"),
+            lt(schema.runs.started_at, cutoff),
+          )
+        )
+        .returning({ id: schema.runs.id });
+
+      if (stuck.length > 0) {
+        console.log(`Cleaned up ${stuck.length} stuck run(s): ${stuck.map((r) => r.id).join(", ")}`);
+      }
+    } catch (err) {
+      console.error("Stuck run cleanup failed:", err);
+    }
+  }, CLEANUP_INTERVAL_MS);
+
+  app.addHook("onClose", async () => {
+    clearInterval(cleanupInterval);
+  });
 }
 
 main().catch((err) => {

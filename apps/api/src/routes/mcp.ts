@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { schema } from "@voiceci/db";
 import { createStorageClient } from "@voiceci/artifacts";
 import { z } from "zod";
@@ -7,7 +8,7 @@ import { AudioTestNameSchema, ConversationTestSpecSchema, AdapterTypeSchema, Aud
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
-import { runTestsInProcess, runLoadTestInProcess } from "../services/test-runner.js";
+import { runLoadTestInProcess } from "../services/test-runner.js";
 
 // ============================================================
 // Session state — exported for callback.ts push notifications
@@ -229,7 +230,7 @@ You can override any threshold via \`audio_test_thresholds\` in run_suite:
 // MCP server factory — one server + transport per session
 // ============================================================
 
-function createMcpServer(app: FastifyInstance): McpServer {
+function createMcpServer(app: FastifyInstance, apiKeyId: string): McpServer {
   const mcpServer = new McpServer(
     { name: "voiceci", version: "0.4.0" },
     { capabilities: { logging: {} } },
@@ -302,7 +303,7 @@ function createMcpServer(app: FastifyInstance): McpServer {
   // --- Tool: run_suite ---
   mcpServer.tool(
     "run_suite",
-    "Run a test suite against a voice agent. All tests run in parallel with independent connections. For already-deployed agents (SIP/WebRTC, or ws-voice with agent_url), tests run in-process with zero infrastructure overhead. For bundled ws-voice agents, a single Fly Machine is provisioned (sized by test count). Results are pushed via SSE as each test completes. bundle_key is reusable across runs. Use audio_test_thresholds to override default pass/fail criteria. Call get_testing_docs first.",
+    "Run a test suite against a voice agent. All tests run in parallel with independent connections. For already-deployed agents (SIP/WebRTC, or ws-voice with agent_url), tests run directly in a worker process. For bundled ws-voice agents, a Fly Machine is provisioned. Results are pushed via SSE as each test completes. bundle_key is reusable across runs. Use audio_test_thresholds to override default pass/fail criteria. Call get_testing_docs first.",
     {
       bundle_key: z
         .string()
@@ -410,6 +411,7 @@ function createMcpServer(app: FastifyInstance): McpServer {
       const [run] = await app.db
         .insert(schema.runs)
         .values({
+          api_key_id: apiKeyId,
           source_type: sourceType,
           bundle_key: bundle_key ?? null,
           bundle_hash: bundle_hash ?? null,
@@ -425,42 +427,26 @@ function createMcpServer(app: FastifyInstance): McpServer {
         runToSession.set(runId, extra.sessionId);
       }
 
-      if (isAlreadyDeployed) {
-        // Already-deployed agent — run tests in-process, no Fly Machine needed
-        const agentUrlResolved = agent_url ?? `http://localhost:3001`;
-        runTestsInProcess(app.db, {
-          runId,
-          testSpec,
-          channelConfig: {
-            adapter,
-            agentUrl: agentUrlResolved,
-            targetPhoneNumber: target_phone_number,
-            voice,
-          },
-          audioTestThresholds: audio_test_thresholds,
-          sessionId: extra.sessionId,
-        });
-      } else {
-        // Bundled agent — single job, single Fly Machine, parallel tests inside
-        const voiceConfig = voice
-          ? { adapter, target_phone_number, voice }
-          : { adapter, target_phone_number };
+      // All runs go through per-user queue — worker handles both
+      // remote (direct execution) and bundled (Fly Machine) paths
+      const voiceConfig = voice
+        ? { adapter, target_phone_number, voice }
+        : { adapter, target_phone_number };
 
-        await app.runQueue.add("execute-run", {
-          run_id: runId,
-          bundle_key: bundle_key ?? null,
-          bundle_hash: bundle_hash ?? null,
-          lockfile_hash: lockfile_hash ?? null,
-          adapter,
-          test_spec: testSpec,
-          target_phone_number,
-          voice_config: voiceConfig,
-          audio_test_thresholds: audio_test_thresholds ?? null,
-          start_command,
-          health_endpoint,
-          agent_url,
-        });
-      }
+      await app.getRunQueue(apiKeyId).add("execute-run", {
+        run_id: runId,
+        bundle_key: bundle_key ?? null,
+        bundle_hash: bundle_hash ?? null,
+        lockfile_hash: lockfile_hash ?? null,
+        adapter,
+        test_spec: testSpec,
+        target_phone_number,
+        voice_config: voiceConfig,
+        audio_test_thresholds: audio_test_thresholds ?? null,
+        start_command,
+        health_endpoint,
+        agent_url,
+      });
 
       return {
         content: [
@@ -566,6 +552,77 @@ function createMcpServer(app: FastifyInstance): McpServer {
     }
   );
 
+  // --- Tool: get_run_status ---
+  mcpServer.tool(
+    "get_run_status",
+    "Get the current status and results of a test run by ID. Use this to poll for results if SSE notifications are delayed or interrupted. Returns the run status, aggregate summary, and all individual test results once complete.",
+    {
+      run_id: z.string().uuid().describe("The run ID returned by run_suite."),
+    },
+    { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
+    async ({ run_id }) => {
+      const [run] = await app.db
+        .select()
+        .from(schema.runs)
+        .where(eq(schema.runs.id, run_id))
+        .limit(1);
+
+      if (!run) {
+        return {
+          content: [{ type: "text" as const, text: `Error: Run ${run_id} not found.` }],
+          isError: true,
+        };
+      }
+
+      // Still in progress — return status only
+      if (run.status === "queued" || run.status === "running") {
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              run_id: run.id,
+              status: run.status,
+              started_at: run.started_at,
+              message: run.status === "queued"
+                ? "Run is queued, waiting for execution."
+                : "Run is in progress. Poll again in a few seconds.",
+            }, null, 2),
+          }],
+        };
+      }
+
+      // Completed (pass or fail) — return full results
+      const scenarios = await app.db
+        .select()
+        .from(schema.scenarioResults)
+        .where(eq(schema.scenarioResults.run_id, run_id));
+
+      const audioResults = scenarios
+        .filter((s) => s.test_type === "audio")
+        .map((s) => s.metrics_json);
+      const conversationResults = scenarios
+        .filter((s) => s.test_type === "conversation")
+        .map((s) => s.metrics_json);
+
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({
+            run_id: run.id,
+            status: run.status,
+            aggregate: run.aggregate_json,
+            audio_results: audioResults,
+            conversation_results: conversationResults,
+            error_text: run.error_text ?? null,
+            duration_ms: run.duration_ms,
+            started_at: run.started_at,
+            finished_at: run.finished_at,
+          }, null, 2),
+        }],
+      };
+    }
+  );
+
   return mcpServer;
 }
 
@@ -602,7 +659,7 @@ export async function mcpRoutes(app: FastifyInstance) {
         if (sid) cleanupSession(sid);
       };
 
-      const server = createMcpServer(app);
+      const server = createMcpServer(app, request.apiKeyId!);
       await server.connect(transport);
 
       reply.hijack();

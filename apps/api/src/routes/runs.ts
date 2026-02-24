@@ -10,12 +10,15 @@ const CreateRunBody = z.object({
 });
 
 export async function runRoutes(app: FastifyInstance) {
-  app.post("/runs", async (request, reply) => {
+  const authPreHandler = { preHandler: app.verifyApiKey };
+
+  app.post("/runs", authPreHandler, async (request, reply) => {
     const body = CreateRunBody.parse(request.body);
 
     const [run] = await app.db
       .insert(schema.runs)
       .values({
+        api_key_id: request.apiKeyId!,
         source_type: body.source_type,
         bundle_key: body.bundle_key,
         bundle_hash: body.bundle_hash,
@@ -23,7 +26,7 @@ export async function runRoutes(app: FastifyInstance) {
       })
       .returning();
 
-    await app.runQueue.add("execute-run", {
+    await app.getRunQueue(request.apiKeyId!).add("execute-run", {
       run_id: run!.id,
       bundle_key: body.bundle_key,
       bundle_hash: body.bundle_hash,

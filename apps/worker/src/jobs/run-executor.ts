@@ -1,7 +1,10 @@
 import { eq } from "drizzle-orm";
 import { createDb, schema, type Database } from "@voiceci/db";
 import { createStorageClient } from "@voiceci/artifacts";
-import { DEFAULT_TIMEOUT_MS } from "@voiceci/shared";
+import { DEFAULT_TIMEOUT_MS, RUNNER_CALLBACK_HEADER } from "@voiceci/shared";
+import type { TestSpec, AudioTestThresholds, AdapterType, VoiceConfig } from "@voiceci/shared";
+import type { AudioChannelConfig } from "@voiceci/adapters";
+import { executeTests } from "@voiceci/runner/executor";
 import { createMachine, waitForMachine, destroyMachine } from "../fly-machines.js";
 
 interface RunJob {
@@ -186,6 +189,79 @@ async function waitForDepImage(
 }
 
 // ---------------------------------------------------------------------------
+// Direct execution for already-deployed agents (SIP, WebRTC, agent_url)
+// ---------------------------------------------------------------------------
+
+async function executeRemoteRun(db: Database, job: RunJob): Promise<void> {
+  const apiUrl = process.env["API_URL"] ?? "https://voiceci-api.fly.dev";
+  const callbackSecret = process.env["RUNNER_CALLBACK_SECRET"] ?? "";
+  const callbackUrl = `${apiUrl}/internal/runner-callback`;
+
+  const adapterType = (job.adapter ?? "ws-voice") as AdapterType;
+  const agentUrl = job.agent_url ?? "http://localhost:3001";
+
+  // Parse voice config
+  let voiceConfig: VoiceConfig | undefined;
+  if (job.voice_config) {
+    voiceConfig = (job.voice_config as { voice?: VoiceConfig }).voice ?? undefined;
+  }
+
+  // Parse audio test thresholds
+  const audioTestThresholds = job.audio_test_thresholds as AudioTestThresholds | undefined;
+
+  const channelConfig: AudioChannelConfig = {
+    adapter: adapterType,
+    agentUrl,
+    targetPhoneNumber: job.target_phone_number,
+    voice: voiceConfig,
+  };
+
+  const testSpec = job.test_spec as TestSpec;
+
+  try {
+    const { status, audioResults, conversationResults, aggregate } = await executeTests({
+      testSpec,
+      channelConfig,
+      audioTestThresholds,
+    });
+
+    // POST results to callback (stores in DB + triggers SSE push)
+    const response = await fetch(callbackUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        [RUNNER_CALLBACK_HEADER]: callbackSecret,
+      },
+      body: JSON.stringify({
+        run_id: job.run_id,
+        status,
+        audio_results: audioResults,
+        conversation_results: conversationResults,
+        aggregate,
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Callback failed: ${response.status} ${await response.text()}`);
+    }
+
+    console.log(`Remote run ${job.run_id} completed: ${status}`);
+  } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : "Unknown error";
+    console.error(`Remote run ${job.run_id} failed:`, errorMessage);
+
+    await db
+      .update(schema.runs)
+      .set({
+        status: "fail",
+        finished_at: new Date(),
+        error_text: errorMessage,
+      })
+      .where(eq(schema.runs.id, job.run_id));
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Main run executor
 // ---------------------------------------------------------------------------
 
@@ -197,6 +273,13 @@ export async function executeRun(job: RunJob): Promise<void> {
     .set({ status: "running", started_at: new Date() })
     .where(eq(schema.runs.id, job.run_id));
 
+  // Already-deployed agents: run tests directly in worker process
+  const isRemote = job.adapter === "sip" || job.adapter === "webrtc" || !!job.agent_url;
+  if (isRemote) {
+    return executeRemoteRun(db, job);
+  }
+
+  // Bundled agents: provision a Fly Machine
   const appName = process.env["FLY_APP_NAME"] ?? "voiceci-runner";
   const region = process.env["FLY_REGION"] ?? "iad";
   const baseImage = process.env["RUNNER_IMAGE"] ?? "registry.fly.io/voiceci-runner:latest";

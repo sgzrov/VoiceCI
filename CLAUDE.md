@@ -45,10 +45,11 @@
 - **Validate Changes**: High-level summary at each step
 - **Document Results**: Add review section to `tasks/plan.md`
 - **Capture Lessons**: Update `tasks/lessons.md` after corrections
+- **Backward Compatability**: Don't worry about backward compatability.
 
 ## Commit Messages
 
-Use [Conventional Commits](https://www.conventionalcommits.org/) format: `type(scope): description`
+Use `type: small description` format for commits.
 
 | Type       | When to use                                              |
 |------------|----------------------------------------------------------|
@@ -64,11 +65,3 @@ Use [Conventional Commits](https://www.conventionalcommits.org/) format: `type(s
 | `style`    | Formatting only (no logic change)                        |
 | `revert`   | Revert a prior commit                                    |
 
-- Scope is optional but encouraged: `fix(auth): handle token refresh race`
-- Keep the subject line short and imperative
-- For reverts, repeat the original subject: `revert: feat(ui): add study import modal`
-
-## Core Principles
-- **Simplicity First**: Make every change as simple as possible. Impact maximal code.
-- **No Laziness**: Find root causes. No temporary fixes. Senior developer standards.
-- **Minimal Impact**: Changes should only touch what's necessary. Avoid introducing bugs.

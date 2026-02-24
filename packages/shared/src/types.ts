@@ -99,6 +99,10 @@ export interface ConversationTurn {
   audio_duration_ms?: number;
   ttfb_ms?: number;
   stt_confidence?: number;
+  /** Harness TTS synthesis time for this turn's caller audio (ms) */
+  tts_ms?: number;
+  /** Harness STT transcription time for this turn's agent audio (ms) */
+  stt_ms?: number;
 }
 
 export interface EvalResult {
@@ -124,6 +128,7 @@ export interface TranscriptMetrics {
 export interface LatencyMetrics {
   ttfb_per_turn_ms: number[];
   p50_ttfb_ms: number;
+  p90_ttfb_ms: number;
   p95_ttfb_ms: number;
   p99_ttfb_ms: number;
   first_turn_ttfb_ms: number;
@@ -131,18 +136,56 @@ export interface LatencyMetrics {
   mean_turn_gap_ms: number;
 }
 
+export interface HarnessOverhead {
+  /** Per-turn TTS synthesis time (ms) — our ElevenLabs call duration */
+  tts_per_turn_ms: number[];
+  /** Per-turn STT transcription time (ms) — our Deepgram call duration */
+  stt_per_turn_ms: number[];
+  mean_tts_ms: number;
+  mean_stt_ms: number;
+}
+
 export type SentimentValue = "positive" | "neutral" | "negative";
 
+export interface SentimentTrajectoryEntry {
+  turn: number;
+  role: "caller" | "agent";
+  value: SentimentValue;
+}
+
 export interface BehavioralMetrics {
+  // Conversational quality
   intent_accuracy?: { score: number; reasoning: string };
-  hallucination_detected?: { detected: boolean; reasoning: string };
-  sentiment_caller?: { value: SentimentValue; reasoning: string };
-  sentiment_agent?: { value: SentimentValue; reasoning: string };
   context_retention?: { score: number; reasoning: string };
-  topic_drift?: { score: number; reasoning: string };
-  empathy_score?: { score: number; reasoning: string };
   clarity_score?: { score: number; reasoning: string };
+  topic_drift?: { score: number; reasoning: string };
+  // Sentiment & empathy
+  sentiment_trajectory?: SentimentTrajectoryEntry[];
+  empathy_score?: { score: number; reasoning: string };
+  // Safety & compliance
+  hallucination_detected?: { detected: boolean; reasoning: string };
   safety_compliance?: { compliant: boolean; reasoning: string };
+  compliance_adherence?: { score: number; reasoning: string };
+  escalation_handling?: { triggered: boolean; handled_appropriately: boolean; score: number; reasoning: string };
+}
+
+export interface AudioAnalysisMetrics {
+  /** Agent speech time / agent total audio time (0-1). Flag if <0.5 */
+  agent_speech_ratio: number;
+  /** VAD-corrected talk ratio: caller_audio / (caller_audio + agent_speech). Flag if >0.7 or <0.3 */
+  talk_ratio_vad: number;
+  /** Longest continuous agent speech segment (ms). Flag if >30000 */
+  longest_monologue_ms: number;
+  /** Count of silence gaps >2s within agent responses (Hamming's SGA metric) */
+  silence_gaps_over_2s: number;
+  /** Total silence within agent responses, excluding between-turn gaps (ms) */
+  total_internal_silence_ms: number;
+  /** Number of distinct speech bursts per agent turn */
+  per_turn_speech_segments: number[];
+  /** Silence ms within each agent turn */
+  per_turn_internal_silence_ms: number[];
+  /** Average speech segment duration (ms). Very short = choppy */
+  mean_agent_speech_segment_ms: number;
 }
 
 export interface ConversationMetrics {
@@ -154,6 +197,8 @@ export interface ConversationMetrics {
   latency?: LatencyMetrics;
   behavioral?: BehavioralMetrics;
   tool_calls?: ToolCallMetrics;
+  audio_analysis?: AudioAnalysisMetrics;
+  harness_overhead?: HarnessOverhead;
 }
 
 export interface ConversationTestResult {

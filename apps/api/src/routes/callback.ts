@@ -93,21 +93,29 @@ export async function callbackRoutes(app: FastifyInstance) {
     const sessionId = runToSession.get(body.run_id);
     if (sessionId) {
       const mcpServer = mcpServers.get(sessionId);
-      if (mcpServer) {
-        await mcpServer.sendLoggingMessage({
-          level: body.status === "pass" ? "info" : "warning",
-          logger: "voiceci:test-result",
-          data: {
-            run_id: body.run_id,
-            status: body.status,
-            aggregate: body.aggregate,
-            audio_results: body.audio_results,
-            conversation_results: body.conversation_results,
-            error_text: body.error_text ?? null,
-          },
-        });
+      try {
+        if (mcpServer) {
+          await mcpServer.sendLoggingMessage({
+            level: body.status === "pass" ? "info" : "warning",
+            logger: "voiceci:test-result",
+            data: {
+              run_id: body.run_id,
+              status: body.status,
+              aggregate: body.aggregate,
+              audio_results: body.audio_results,
+              conversation_results: body.conversation_results,
+              error_text: body.error_text ?? null,
+            },
+          });
+        }
+      } catch (err) {
+        app.log.warn(
+          { run_id: body.run_id, error: err instanceof Error ? err.message : String(err) },
+          "Failed to push SSE test result to MCP client"
+        );
+      } finally {
+        runToSession.delete(body.run_id);
       }
-      runToSession.delete(body.run_id);
     }
 
     return reply.send({ ok: true });

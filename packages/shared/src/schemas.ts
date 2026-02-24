@@ -70,6 +70,8 @@ export const ConversationTurnSchema = z.object({
   audio_duration_ms: z.number().optional(),
   ttfb_ms: z.number().optional(),
   stt_confidence: z.number().optional(),
+  tts_ms: z.number().optional(),
+  stt_ms: z.number().optional(),
 });
 
 export const EvalResultSchema = z.object({
@@ -95,6 +97,7 @@ export const TranscriptMetricsSchema = z.object({
 export const LatencyMetricsSchema = z.object({
   ttfb_per_turn_ms: z.array(z.number()),
   p50_ttfb_ms: z.number(),
+  p90_ttfb_ms: z.number(),
   p95_ttfb_ms: z.number(),
   p99_ttfb_ms: z.number(),
   first_turn_ttfb_ms: z.number(),
@@ -103,17 +106,48 @@ export const LatencyMetricsSchema = z.object({
 });
 
 const SentimentValueSchema = z.enum(["positive", "neutral", "negative"]);
+const SentimentTrajectoryEntrySchema = z.object({
+  turn: z.number().int().min(0),
+  role: z.enum(["caller", "agent"]),
+  value: SentimentValueSchema,
+});
 
 export const BehavioralMetricsSchema = z.object({
   intent_accuracy: z.object({ score: z.number(), reasoning: z.string() }).optional(),
   hallucination_detected: z.object({ detected: z.boolean(), reasoning: z.string() }).optional(),
-  sentiment_caller: z.object({ value: SentimentValueSchema, reasoning: z.string() }).optional(),
-  sentiment_agent: z.object({ value: SentimentValueSchema, reasoning: z.string() }).optional(),
+  sentiment_trajectory: z.array(SentimentTrajectoryEntrySchema).optional(),
   context_retention: z.object({ score: z.number(), reasoning: z.string() }).optional(),
   topic_drift: z.object({ score: z.number(), reasoning: z.string() }).optional(),
   empathy_score: z.object({ score: z.number(), reasoning: z.string() }).optional(),
   clarity_score: z.object({ score: z.number(), reasoning: z.string() }).optional(),
   safety_compliance: z.object({ compliant: z.boolean(), reasoning: z.string() }).optional(),
+  compliance_adherence: z.object({ score: z.number(), reasoning: z.string() }).optional(),
+  escalation_handling: z
+    .object({
+      triggered: z.boolean(),
+      handled_appropriately: z.boolean(),
+      score: z.number(),
+      reasoning: z.string(),
+    })
+    .optional(),
+});
+
+export const AudioAnalysisMetricsSchema = z.object({
+  agent_speech_ratio: z.number(),
+  talk_ratio_vad: z.number(),
+  longest_monologue_ms: z.number(),
+  silence_gaps_over_2s: z.number().int().min(0),
+  total_internal_silence_ms: z.number(),
+  per_turn_speech_segments: z.array(z.number().int().min(0)),
+  per_turn_internal_silence_ms: z.array(z.number().int().min(0)),
+  mean_agent_speech_segment_ms: z.number(),
+});
+
+export const HarnessOverheadSchema = z.object({
+  tts_per_turn_ms: z.array(z.number()),
+  stt_per_turn_ms: z.array(z.number()),
+  mean_tts_ms: z.number(),
+  mean_stt_ms: z.number(),
 });
 
 export const ConversationMetricsSchema = z.object({
@@ -125,6 +159,8 @@ export const ConversationMetricsSchema = z.object({
   latency: LatencyMetricsSchema.optional(),
   behavioral: BehavioralMetricsSchema.optional(),
   tool_calls: ToolCallMetricsSchema.optional(),
+  audio_analysis: AudioAnalysisMetricsSchema.optional(),
+  harness_overhead: HarnessOverheadSchema.optional(),
 });
 
 export const AudioTestResultSchema = z.object({

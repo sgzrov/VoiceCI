@@ -1,7 +1,13 @@
 import { execSync, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { TestSpec, AdapterType, VoiceConfig, AudioTestThresholds } from "@voiceci/shared";
+import type {
+  TestSpec,
+  AdapterType,
+  VoiceConfig,
+  AudioTestThresholds,
+  PlatformConfig,
+} from "@voiceci/shared";
 import type { AudioChannelConfig } from "@voiceci/adapters";
 import { executeTests } from "./executor.js";
 import { reportResults } from "./reporter.js";
@@ -49,8 +55,21 @@ async function main() {
     audioTestThresholds = JSON.parse(thresholdsJson) as AudioTestThresholds;
   }
 
+  // Parse platform config from env (for platform-hosted adapters)
+  let platformConfig: PlatformConfig | undefined;
+  const platformConfigJson = process.env["PLATFORM_CONFIG_JSON"];
+  if (platformConfigJson) {
+    platformConfig = JSON.parse(platformConfigJson) as PlatformConfig;
+  }
+
   // For remote agents (SIP/WebRTC), skip local agent startup
-  const isRemoteAgent = adapterType === "sip" || adapterType === "webrtc";
+  const isRemoteAgent =
+    adapterType === "sip" ||
+    adapterType === "webrtc" ||
+    adapterType === "vapi" ||
+    adapterType === "retell" ||
+    adapterType === "elevenlabs" ||
+    adapterType === "bland";
   let agentProcess: ChildProcess | null = null;
   const agentUrl = process.env["AGENT_URL"] ?? "http://localhost:3001";
 
@@ -88,6 +107,7 @@ async function main() {
     agentUrl,
     targetPhoneNumber: process.env["TARGET_PHONE_NUMBER"],
     voice: voiceConfig,
+    platform: platformConfig,
   };
 
   try {

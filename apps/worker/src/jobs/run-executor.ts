@@ -2,7 +2,13 @@ import { eq } from "drizzle-orm";
 import { createDb, schema, type Database } from "@voiceci/db";
 import { createStorageClient } from "@voiceci/artifacts";
 import { DEFAULT_TIMEOUT_MS, RUNNER_CALLBACK_HEADER } from "@voiceci/shared";
-import type { TestSpec, AudioTestThresholds, AdapterType, VoiceConfig } from "@voiceci/shared";
+import type {
+  TestSpec,
+  AudioTestThresholds,
+  AdapterType,
+  VoiceConfig,
+  PlatformConfig,
+} from "@voiceci/shared";
 import type { AudioChannelConfig } from "@voiceci/adapters";
 import { executeTests } from "@voiceci/runner/executor";
 import { createMachine, waitForMachine, destroyMachine } from "../fly-machines.js";
@@ -20,6 +26,7 @@ interface RunJob {
   start_command?: string;
   health_endpoint?: string;
   agent_url?: string;
+  platform?: PlatformConfig | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -214,6 +221,7 @@ async function executeRemoteRun(db: Database, job: RunJob): Promise<void> {
     agentUrl,
     targetPhoneNumber: job.target_phone_number,
     voice: voiceConfig,
+    platform: job.platform ?? undefined,
   };
 
   const testSpec = job.test_spec as TestSpec;
@@ -274,7 +282,16 @@ export async function executeRun(job: RunJob): Promise<void> {
     .where(eq(schema.runs.id, job.run_id));
 
   // Already-deployed agents: run tests directly in worker process
-  const isRemote = job.adapter === "sip" || job.adapter === "webrtc" || !!job.agent_url;
+  const isPlatformAdapter =
+    job.adapter === "vapi" ||
+    job.adapter === "retell" ||
+    job.adapter === "elevenlabs" ||
+    job.adapter === "bland";
+  const isRemote =
+    isPlatformAdapter ||
+    job.adapter === "sip" ||
+    job.adapter === "webrtc" ||
+    !!job.agent_url;
   if (isRemote) {
     return executeRemoteRun(db, job);
   }
@@ -298,8 +315,6 @@ export async function executeRun(job: RunJob): Promise<void> {
     // Generate presigned download URL for bundle (only if bundle exists)
     let bundleDownloadUrl: string | undefined;
     if (job.bundle_key) {
-      console.log(`S3 config: endpoint=${endpoint}, bucket=${bucket}, keyId=${accessKeyId ? accessKeyId.slice(0, 6) + "..." : "EMPTY"}`);
-
       const storage = createStorageClient({
         endpoint,
         bucket,
@@ -308,7 +323,7 @@ export async function executeRun(job: RunJob): Promise<void> {
         region: "auto",
       });
       bundleDownloadUrl = await storage.presignDownload(job.bundle_key);
-      console.log(`Presigned URL for ${job.bundle_key}: ${bundleDownloadUrl}`);
+      console.log(`Generated bundle download URL for ${job.bundle_key}`);
     } else {
       console.log("No bundle_key — remote agent, skipping presign");
     }
@@ -336,6 +351,9 @@ export async function executeRun(job: RunJob): Promise<void> {
       "LIVEKIT_API_KEY",
       "LIVEKIT_API_SECRET",
       "ANTHROPIC_API_KEY",
+      "RETELL_API_KEY",
+      "BLAND_API_KEY",
+      "RUNNER_PUBLIC_HOST",
     ];
     for (const key of voiceKeys) {
       if (process.env[key]) {
@@ -377,6 +395,9 @@ export async function executeRun(job: RunJob): Promise<void> {
     }
     if (job.agent_url) {
       configEnv["AGENT_URL"] = job.agent_url;
+    }
+    if (job.platform) {
+      configEnv["PLATFORM_CONFIG_JSON"] = JSON.stringify(job.platform);
     }
 
     const machineEnv: Record<string, string> = {

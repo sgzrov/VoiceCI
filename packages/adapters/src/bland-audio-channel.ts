@@ -1,31 +1,25 @@
 /**
  * Bland AI Audio Channel
  *
- * Creates an outbound call via Bland's API and pulls tool call data
- * after the call via GET /v1/calls/{id}.
+ * Composes a SipAudioChannel for bidirectional audio (Plivo phone call)
+ * with Bland's REST API for post-call tool call extraction.
  *
- * Bland handles calls over the phone network — there is no direct
- * WebSocket audio exchange. VoiceCI sends audio via TTS to the caller
- * prompt and Bland's agent responds over the phone.
- *
- * For tool call data: Bland logs tool invocations as "agent-action"
- * entries in transcripts, plus stores results in the variables object.
+ * Flow:
+ *   1. connect()  — dials the Bland agent's phone number via SIP/Plivo
+ *   2. sendAudio() / on("audio") — bidirectional PCM 24kHz over SIP
+ *   3. disconnect() — hangs up the SIP call
+ *   4. getCallData() — resolves Bland call_id via list calls API,
+ *      then fetches tool call data from GET /v1/calls/{id}
  */
 
 import type { ObservedToolCall } from "@voiceci/shared";
 import { BaseAudioChannel } from "./audio-channel.js";
+import { SipAudioChannel, type SipAudioChannelConfig } from "./sip-audio-channel.js";
 
 export interface BlandAudioChannelConfig {
   apiKey: string;
   phoneNumber: string;
-  fromNumber?: string;
-  task?: string;
-  pathwayId?: string;
-}
-
-interface BlandCreateCallResponse {
-  call_id: string;
-  status: string;
+  sip: SipAudioChannelConfig;
 }
 
 interface BlandTranscriptEntry {
@@ -48,10 +42,15 @@ interface BlandCallResponse {
   call_length?: number;
 }
 
+interface BlandListCallsResponse {
+  calls?: Array<{ call_id: string; created_at: string }>;
+}
+
 export class BlandAudioChannel extends BaseAudioChannel {
   private config: BlandAudioChannelConfig;
+  private sipChannel: SipAudioChannel | null = null;
   private callId: string | null = null;
-  private _connected = false;
+  private callStartTimestamp = 0;
 
   constructor(config: BlandAudioChannelConfig) {
     super();
@@ -59,56 +58,38 @@ export class BlandAudioChannel extends BaseAudioChannel {
   }
 
   get connected(): boolean {
-    return this._connected;
+    return this.sipChannel?.connected ?? false;
   }
 
   async connect(): Promise<void> {
-    const body: Record<string, unknown> = {
-      phone_number: this.config.phoneNumber,
-    };
-    if (this.config.fromNumber) body.from = this.config.fromNumber;
-    if (this.config.task) body.task = this.config.task;
-    if (this.config.pathwayId) body.pathway_id = this.config.pathwayId;
+    this.callStartTimestamp = Date.now();
+    this.sipChannel = new SipAudioChannel(this.config.sip);
 
-    const res = await fetch("https://api.bland.ai/v1/calls", {
-      method: "POST",
-      headers: {
-        Authorization: this.config.apiKey,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(body),
-    });
+    this.sipChannel.on("audio", (chunk) => this.emit("audio", chunk));
+    this.sipChannel.on("error", (err) => this.emit("error", err));
+    this.sipChannel.on("disconnected", () => this.emit("disconnected"));
 
-    if (!res.ok) {
-      const errorText = await res.text();
-      throw new Error(`Bland call creation failed (${res.status}): ${errorText}`);
-    }
-
-    const data = (await res.json()) as BlandCreateCallResponse;
-    this.callId = data.call_id;
-    this._connected = true;
-
-    console.log(`Bland call created: ${this.callId}`);
+    await this.sipChannel.connect();
   }
 
-  sendAudio(_pcm: Buffer): void {
-    // Bland handles audio over the phone network.
-    // Audio is sent through TTS on Bland's side based on the task/pathway.
-    // This is a no-op for phone-based calls.
+  sendAudio(pcm: Buffer): void {
+    if (!this.sipChannel) {
+      throw new Error("Bland channel not connected");
+    }
+    this.sipChannel.sendAudio(pcm);
   }
 
   async disconnect(): Promise<void> {
-    if (this.callId) {
-      // End the call via Bland API
-      await fetch(`https://api.bland.ai/v1/calls/${this.callId}/stop`, {
-        method: "POST",
-        headers: { Authorization: this.config.apiKey },
-      }).catch(() => {});
+    if (this.sipChannel) {
+      await this.sipChannel.disconnect();
+      this.sipChannel = null;
     }
-    this._connected = false;
   }
 
   async getCallData(): Promise<ObservedToolCall[]> {
+    if (!this.callId) {
+      this.callId = await this.resolveCallId();
+    }
     if (!this.callId) return [];
 
     // Wait for Bland to process the call data
@@ -122,6 +103,45 @@ export class BlandAudioChannel extends BaseAudioChannel {
 
     const data = (await res.json()) as BlandCallResponse;
     return this.parseToolCalls(data);
+  }
+
+  private async resolveCallId(): Promise<string | null> {
+    // Wait for Bland to ingest the call
+    await sleep(3000);
+
+    const maxAttempts = 3;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        const params = new URLSearchParams({
+          to: this.config.phoneNumber,
+          from: this.config.sip.fromNumber,
+          limit: "1",
+          ascending: "false",
+        });
+
+        const res = await fetch(`https://api.bland.ai/v1/calls?${params}`, {
+          headers: { Authorization: this.config.apiKey },
+        });
+
+        if (res.ok) {
+          const data = (await res.json()) as BlandListCallsResponse;
+          const calls = data.calls ?? [];
+          const match = calls.find(
+            (c) => new Date(c.created_at).getTime() >= this.callStartTimestamp - 30_000
+          );
+          if (match) return match.call_id;
+        }
+      } catch {
+        // Retry on network errors
+      }
+
+      if (attempt < maxAttempts - 1) {
+        await sleep(2000 * (attempt + 1));
+      }
+    }
+
+    console.warn("Bland: could not resolve call_id from list calls API");
+    return null;
   }
 
   private parseToolCalls(data: BlandCallResponse): ObservedToolCall[] {

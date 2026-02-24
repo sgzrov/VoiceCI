@@ -59,7 +59,7 @@ export async function executeTests(opts: ExecuteTestsOpts): Promise<ExecuteTests
     testSpec,
     channelConfig,
     audioTestThresholds,
-    concurrencyLimit = channelConfig.adapter === "sip" ? 5 : 10,
+    concurrencyLimit = ["sip", "retell", "bland"].includes(channelConfig.adapter) ? 5 : 10,
     onTestComplete,
   } = opts;
 

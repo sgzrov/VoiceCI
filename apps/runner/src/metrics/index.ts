@@ -1,24 +1,37 @@
 /**
- * Metric orchestrator — computes all transcript + latency metrics from turns.
+ * Metric orchestrator — computes all transcript + latency + audio analysis + harness overhead metrics.
  */
 
-import type { ConversationTurn, TranscriptMetrics, LatencyMetrics } from "@voiceci/shared";
+import type {
+  ConversationTurn,
+  TranscriptMetrics,
+  LatencyMetrics,
+  AudioAnalysisMetrics,
+  HarnessOverhead,
+} from "@voiceci/shared";
 import { computeTranscriptMetrics } from "./transcript.js";
-import { computeLatencyMetrics } from "./latency.js";
+import { computeLatencyMetrics, computeHarnessOverhead } from "./latency.js";
+import { computeAudioAnalysisMetrics, type TurnAudioData } from "./audio-analysis.js";
 
 export interface ComputedMetrics {
   transcript: TranscriptMetrics;
   latency: LatencyMetrics;
   talk_ratio: number | undefined;
+  audio_analysis: AudioAnalysisMetrics | undefined;
+  harness_overhead: HarnessOverhead | undefined;
 }
 
 /**
  * Compute all non-LLM metrics from conversation turns.
  * These are pure, instant computations with no external calls.
  */
-export function computeAllMetrics(turns: ConversationTurn[]): ComputedMetrics {
+export function computeAllMetrics(
+  turns: ConversationTurn[],
+  turnAudioData?: TurnAudioData[]
+): ComputedMetrics {
   const transcript = computeTranscriptMetrics(turns);
   const latency = computeLatencyMetrics(turns);
+  const harness_overhead = computeHarnessOverhead(turns);
 
   // Talk ratio: caller audio duration / total audio duration
   const callerAudioMs = turns
@@ -30,8 +43,15 @@ export function computeAllMetrics(turns: ConversationTurn[]): ComputedMetrics {
   const totalAudioMs = callerAudioMs + agentAudioMs;
   const talk_ratio = totalAudioMs > 0 ? callerAudioMs / totalAudioMs : undefined;
 
-  return { transcript, latency, talk_ratio };
+  // VAD-derived audio analysis (when turn audio data is available)
+  const audio_analysis =
+    turnAudioData && turnAudioData.length > 0
+      ? computeAudioAnalysisMetrics(turnAudioData)
+      : undefined;
+
+  return { transcript, latency, talk_ratio, audio_analysis, harness_overhead };
 }
 
 export { computeTranscriptMetrics } from "./transcript.js";
-export { computeLatencyMetrics } from "./latency.js";
+export { computeLatencyMetrics, computeHarnessOverhead } from "./latency.js";
+export { computeAudioAnalysisMetrics, type TurnAudioData } from "./audio-analysis.js";

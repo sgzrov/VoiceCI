@@ -1,29 +1,25 @@
 /**
  * Retell Audio Channel
  *
- * Creates a web call via Retell's API, connects via their WebRTC SDK,
- * and pulls tool call data after the call via GET /v2/get-call/{id}.
+ * Composes a SipAudioChannel for bidirectional audio (Plivo phone call)
+ * with Retell's REST API for post-call tool call extraction.
  *
- * Retell V2 uses WebRTC (not WebSocket) for audio. We use their SDK
- * for the audio connection and their REST API for tool call data.
- *
- * Audio: PCM 24kHz mono (our standard) — Retell handles format conversion internally.
+ * Flow:
+ *   1. connect()  — dials the Retell agent's phone number via SIP/Plivo
+ *   2. sendAudio() / on("audio") — bidirectional PCM 24kHz over SIP
+ *   3. disconnect() — hangs up the SIP call
+ *   4. getCallData() — resolves Retell call_id via list-calls API,
+ *      then fetches tool call data from GET /v2/get-call/{id}
  */
 
 import type { ObservedToolCall } from "@voiceci/shared";
 import { BaseAudioChannel } from "./audio-channel.js";
+import { SipAudioChannel, type SipAudioChannelConfig } from "./sip-audio-channel.js";
 
 export interface RetellAudioChannelConfig {
   apiKey: string;
   agentId: string;
-}
-
-interface RetellCreateWebCallResponse {
-  call_id: string;
-  access_token: string;
-  call_type: string;
-  call_status: string;
-  agent_id: string;
+  sip: SipAudioChannelConfig;
 }
 
 interface RetellToolCallInvocation {
@@ -61,10 +57,9 @@ interface RetellCallResponse {
 
 export class RetellAudioChannel extends BaseAudioChannel {
   private config: RetellAudioChannelConfig;
+  private sipChannel: SipAudioChannel | null = null;
   private callId: string | null = null;
-  private accessToken: string | null = null;
-  private _connected = false;
-  private audioBuffer: Buffer[] = [];
+  private callStartTimestamp = 0;
 
   constructor(config: RetellAudioChannelConfig) {
     super();
@@ -72,56 +67,38 @@ export class RetellAudioChannel extends BaseAudioChannel {
   }
 
   get connected(): boolean {
-    return this._connected;
+    return this.sipChannel?.connected ?? false;
   }
 
   async connect(): Promise<void> {
-    // Create web call via Retell API
-    const res = await fetch("https://api.retellai.com/v2/create-web-call", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${this.config.apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        agent_id: this.config.agentId,
-      }),
-    });
+    this.callStartTimestamp = Date.now();
+    this.sipChannel = new SipAudioChannel(this.config.sip);
 
-    if (!res.ok) {
-      const errorText = await res.text();
-      throw new Error(`Retell web call creation failed (${res.status}): ${errorText}`);
-    }
+    this.sipChannel.on("audio", (chunk) => this.emit("audio", chunk));
+    this.sipChannel.on("error", (err) => this.emit("error", err));
+    this.sipChannel.on("disconnected", () => this.emit("disconnected"));
 
-    const data = (await res.json()) as RetellCreateWebCallResponse;
-    this.callId = data.call_id;
-    this.accessToken = data.access_token;
-    this._connected = true;
-
-    // Note: Full WebRTC connection requires @anthropic-ai/retell-client-js-sdk
-    // or a similar WebRTC client. For now, we store the access_token and call_id
-    // for tool call data retrieval. Audio exchange happens through the Retell SDK
-    // which should be initialized by the consumer with the access_token.
-    //
-    // In a production implementation, this would initialize the Retell WebRTC
-    // client with the access_token and wire up audio send/receive.
-    console.log(`Retell call created: ${this.callId} (WebRTC access_token obtained)`);
+    await this.sipChannel.connect();
   }
 
   sendAudio(pcm: Buffer): void {
-    if (!this._connected) {
+    if (!this.sipChannel) {
       throw new Error("Retell channel not connected");
     }
-    // Buffer audio — in a full implementation this goes through WebRTC
-    this.audioBuffer.push(pcm);
+    this.sipChannel.sendAudio(pcm);
   }
 
   async disconnect(): Promise<void> {
-    this._connected = false;
-    this.audioBuffer = [];
+    if (this.sipChannel) {
+      await this.sipChannel.disconnect();
+      this.sipChannel = null;
+    }
   }
 
   async getCallData(): Promise<ObservedToolCall[]> {
+    if (!this.callId) {
+      this.callId = await this.resolveCallId();
+    }
     if (!this.callId) return [];
 
     // Wait for Retell to process the call data
@@ -135,6 +112,53 @@ export class RetellAudioChannel extends BaseAudioChannel {
 
     const data = (await res.json()) as RetellCallResponse;
     return this.parseToolCalls(data);
+  }
+
+  private async resolveCallId(): Promise<string | null> {
+    // Wait for Retell to ingest the call
+    await sleep(3000);
+
+    const maxAttempts = 3;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        const res = await fetch("https://api.retellai.com/v2/list-calls", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${this.config.apiKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            filter_criteria: {
+              agent_id: [this.config.agentId],
+              to_number: [this.config.sip.phoneNumber],
+              from_number: [this.config.sip.fromNumber],
+              call_type: ["phone_call"],
+              start_timestamp: {
+                lower_threshold: this.callStartTimestamp - 30_000,
+              },
+            },
+            sort_order: "descending",
+            limit: 1,
+          }),
+        });
+
+        if (res.ok) {
+          const data = (await res.json()) as RetellCallResponse[];
+          if (data.length > 0) {
+            return data[0].call_id;
+          }
+        }
+      } catch {
+        // Retry on network errors
+      }
+
+      if (attempt < maxAttempts - 1) {
+        await sleep(2000 * (attempt + 1));
+      }
+    }
+
+    console.warn("Retell: could not resolve call_id from list-calls API");
+    return null;
   }
 
   private parseToolCalls(data: RetellCallResponse): ObservedToolCall[] {

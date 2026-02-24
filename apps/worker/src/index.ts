@@ -1,5 +1,6 @@
 import { Worker } from "bullmq";
 import IORedis from "ioredis";
+import type { PlatformConfig } from "@voiceci/shared";
 import { executeRun } from "./jobs/run-executor.js";
 
 const redisUrl = process.env["REDIS_URL"] ?? "redis://localhost:6379";
@@ -28,6 +29,7 @@ function createWorkerForQueue(queueName: string) {
         start_command?: string;
         health_endpoint?: string;
         agent_url?: string;
+        platform?: Record<string, unknown> | null;
       };
 
       console.log(`[${queueName}] Processing run ${data.run_id} (adapter: ${data.adapter ?? "unknown"})`);
@@ -44,6 +46,7 @@ function createWorkerForQueue(queueName: string) {
         start_command: data.start_command,
         health_endpoint: data.health_endpoint,
         agent_url: data.agent_url,
+        platform: data.platform as PlatformConfig | null,
       });
     },
     {

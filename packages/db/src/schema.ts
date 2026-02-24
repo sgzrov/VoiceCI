@@ -24,6 +24,9 @@ export const testTypeEnum = pgEnum("test_type", ["audio", "conversation"]);
 
 export const runs = pgTable("runs", {
   id: uuid("id").primaryKey().defaultRandom(),
+  api_key_id: uuid("api_key_id")
+    .notNull()
+    .references(() => apiKeys.id),
   status: runStatusEnum("status").notNull().default("queued"),
   source_type: sourceTypeEnum("source_type").notNull(),
   bundle_key: text("bundle_key"),

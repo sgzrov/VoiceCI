@@ -146,12 +146,18 @@ importers:
 
   apps/worker:
     dependencies:
+      '@voiceci/adapters':
+        specifier: workspace:*
+        version: link:../../packages/adapters
       '@voiceci/artifacts':
         specifier: workspace:*
         version: link:../../packages/artifacts
       '@voiceci/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@voiceci/runner':
+        specifier: workspace:*
+        version: link:../runner
       '@voiceci/shared':
         specifier: workspace:*
         version: link:../../packages/shared

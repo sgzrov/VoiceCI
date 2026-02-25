@@ -1,9 +1,13 @@
 /**
  * SIP/Phone Audio Channel (Plivo Audio Streams)
  *
- * Places an outbound call via Plivo, streams bidirectional audio
- * through Plivo Audio Streams over WebSocket. Handles PCM 24kHz
- * <-> mulaw 8kHz conversion internally.
+ * Streams bidirectional audio through Plivo Audio Streams over WebSocket.
+ * Handles PCM 24kHz <-> mulaw 8kHz conversion internally.
+ *
+ * Supports two modes:
+ *   - outbound (default): Places an outbound call via Plivo to phoneNumber
+ *   - inbound: Creates a temporary Plivo Application, assigns it to
+ *     fromNumber, then waits for an incoming call from the voice platform
  *
  * Extracted from sip-voice-adapter.ts — no TTS/STT/silence logic.
  */
@@ -11,6 +15,7 @@
 import { WebSocketServer, WebSocket } from "ws";
 import http from "node:http";
 import { pcmToMulaw, mulawToPcm, resample } from "@voiceci/voice";
+import type { ObservedToolCall } from "@voiceci/shared";
 import { BaseAudioChannel } from "./audio-channel.js";
 
 export interface SipAudioChannelConfig {
@@ -19,6 +24,8 @@ export interface SipAudioChannelConfig {
   authId: string;
   authToken: string;
   publicHost: string;
+  /** "outbound" (default): Plivo dials phoneNumber. "inbound": wait for incoming call on fromNumber. */
+  mode?: "inbound" | "outbound";
 }
 
 interface PlivoStreamMessage {
@@ -34,6 +41,9 @@ export class SipAudioChannel extends BaseAudioChannel {
   private streamId: string | null = null;
   private port = 0;
   private callUuid: string | null = null;
+  private toolCalls: ObservedToolCall[] = [];
+  private connectTimestamp = 0;
+  private appId: string | null = null;
 
   constructor(config: SipAudioChannelConfig) {
     super();
@@ -44,41 +54,23 @@ export class SipAudioChannel extends BaseAudioChannel {
     return this.mediaWs !== null;
   }
 
+  get toolCallEndpointUrl(): string | null {
+    if (this.port === 0) return null;
+    return `https://${this.config.publicHost}:${this.port}/tool-calls`;
+  }
+
   async connect(): Promise<void> {
+    this.connectTimestamp = Date.now();
+    this.toolCalls = [];
     await this.startServer();
 
-    const answerUrl = `https://${this.config.publicHost}:${this.port}/answer`;
+    console.log(`SIP tool call endpoint: ${this.toolCallEndpointUrl}`);
 
-    const authHeader = Buffer.from(
-      `${this.config.authId}:${this.config.authToken}`
-    ).toString("base64");
-
-    const res = await fetch(
-      `https://api.plivo.com/v1/Account/${this.config.authId}/Call/`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Basic ${authHeader}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          to: this.config.phoneNumber,
-          from: this.config.fromNumber,
-          answer_url: answerUrl,
-          answer_method: "GET",
-        }),
-      }
-    );
-
-    if (!res.ok) {
-      const errorText = await res.text();
-      throw new Error(
-        `Plivo call creation failed (${res.status}): ${errorText}`
-      );
+    if (this.config.mode === "inbound") {
+      await this.setupInbound();
+    } else {
+      await this.placeOutboundCall();
     }
-
-    const callData = (await res.json()) as { request_uuid: string };
-    this.callUuid = callData.request_uuid;
 
     await this.waitForMediaConnection();
   }
@@ -110,12 +102,14 @@ export class SipAudioChannel extends BaseAudioChannel {
     }
   }
 
-  async disconnect(): Promise<void> {
-    if (this.callUuid) {
-      const authHeader = Buffer.from(
-        `${this.config.authId}:${this.config.authToken}`
-      ).toString("base64");
+  async getCallData(): Promise<ObservedToolCall[]> {
+    return this.toolCalls;
+  }
 
+  async disconnect(): Promise<void> {
+    const authHeader = this.plivoAuthHeader();
+
+    if (this.callUuid) {
       await fetch(
         `https://api.plivo.com/v1/Account/${this.config.authId}/Call/${this.callUuid}/`,
         {
@@ -127,6 +121,18 @@ export class SipAudioChannel extends BaseAudioChannel {
       this.callUuid = null;
     }
 
+    if (this.appId) {
+      await fetch(
+        `https://api.plivo.com/v1/Account/${this.config.authId}/Application/${this.appId}/`,
+        {
+          method: "DELETE",
+          headers: { Authorization: `Basic ${authHeader}` },
+        }
+      ).catch(() => {});
+
+      this.appId = null;
+    }
+
     if (this.mediaWs) {
       this.mediaWs.close();
       this.mediaWs = null;
@@ -135,10 +141,108 @@ export class SipAudioChannel extends BaseAudioChannel {
       this.wss.close();
       this.wss = null;
     }
+
+    // Grace period: keep HTTP server alive for late tool call POSTs
     if (this.server) {
-      this.server.close();
+      const server = this.server;
       this.server = null;
+      await new Promise<void>((resolve) => {
+        setTimeout(() => {
+          server.close();
+          resolve();
+        }, 5000);
+      });
     }
+  }
+
+  private async placeOutboundCall(): Promise<void> {
+    const answerUrl = `https://${this.config.publicHost}:${this.port}/answer`;
+    const authHeader = this.plivoAuthHeader();
+
+    const res = await fetch(
+      `https://api.plivo.com/v1/Account/${this.config.authId}/Call/`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Basic ${authHeader}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          to: this.config.phoneNumber,
+          from: this.config.fromNumber,
+          answer_url: answerUrl,
+          answer_method: "GET",
+        }),
+      }
+    );
+
+    if (!res.ok) {
+      const errorText = await res.text();
+      throw new Error(
+        `Plivo call creation failed (${res.status}): ${errorText}`
+      );
+    }
+
+    const callData = (await res.json()) as { request_uuid: string };
+    this.callUuid = callData.request_uuid;
+  }
+
+  private async setupInbound(): Promise<void> {
+    const authHeader = this.plivoAuthHeader();
+    const answerUrl = `https://${this.config.publicHost}:${this.port}/answer`;
+
+    // Create a temporary Plivo Application with our answer_url
+    const appRes = await fetch(
+      `https://api.plivo.com/v1/Account/${this.config.authId}/Application/`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Basic ${authHeader}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          app_name: `voiceci-${Date.now()}`,
+          answer_url: answerUrl,
+          answer_method: "GET",
+        }),
+      }
+    );
+
+    if (!appRes.ok) {
+      const errorText = await appRes.text();
+      throw new Error(
+        `Plivo application creation failed (${appRes.status}): ${errorText}`
+      );
+    }
+
+    const appData = (await appRes.json()) as { app_id: string };
+    this.appId = appData.app_id;
+
+    // Assign the application to our Plivo number
+    const numRes = await fetch(
+      `https://api.plivo.com/v1/Account/${this.config.authId}/Number/${this.config.fromNumber}/`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Basic ${authHeader}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ app_id: this.appId }),
+      }
+    );
+
+    if (!numRes.ok) {
+      const errorText = await numRes.text();
+      throw new Error(
+        `Plivo number update failed (${numRes.status}): ${errorText}`
+      );
+    }
+  }
+
+  private plivoAuthHeader(): string {
+    return Buffer.from(
+      `${this.config.authId}:${this.config.authToken}`
+    ).toString("base64");
   }
 
   private async startServer(): Promise<void> {
@@ -155,6 +259,20 @@ export class SipAudioChannel extends BaseAudioChannel {
 
           res.writeHead(200, { "Content-Type": "application/xml" });
           res.end(xml);
+        } else if (req.url?.startsWith("/tool-calls")) {
+          if (req.method === "OPTIONS") {
+            res.writeHead(204, {
+              "Access-Control-Allow-Origin": "*",
+              "Access-Control-Allow-Methods": "POST, OPTIONS",
+              "Access-Control-Allow-Headers": "Content-Type",
+            });
+            res.end();
+          } else if (req.method === "POST") {
+            this.handleToolCallPost(req, res);
+          } else {
+            res.writeHead(405);
+            res.end();
+          }
         } else {
           res.writeHead(404);
           res.end();
@@ -212,6 +330,57 @@ export class SipAudioChannel extends BaseAudioChannel {
         }
         resolve();
       });
+    });
+  }
+
+  private handleToolCallPost(req: http.IncomingMessage, res: http.ServerResponse): void {
+    let body = "";
+    let aborted = false;
+
+    req.on("data", (chunk: Buffer) => {
+      body += chunk.toString();
+      if (body.length > 1_048_576) {
+        aborted = true;
+        res.writeHead(413, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Payload too large" }));
+        req.destroy();
+      }
+    });
+
+    req.on("end", () => {
+      if (aborted) return;
+
+      try {
+        const parsed = JSON.parse(body) as Record<string, unknown> | Record<string, unknown>[];
+        const events = Array.isArray(parsed) ? parsed : [parsed];
+        let accepted = 0;
+
+        for (const event of events) {
+          if (typeof event.name !== "string" || !event.name) continue;
+
+          this.toolCalls.push({
+            name: event.name as string,
+            arguments: (event.arguments as Record<string, unknown>) ?? {},
+            result: event.result,
+            successful: event.successful as boolean | undefined,
+            timestamp_ms: Date.now() - this.connectTimestamp,
+            latency_ms: event.duration_ms as number | undefined,
+          });
+          accepted++;
+        }
+
+        res.writeHead(201, {
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": "*",
+        });
+        res.end(JSON.stringify({ accepted }));
+      } catch {
+        res.writeHead(400, {
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": "*",
+        });
+        res.end(JSON.stringify({ error: "Invalid JSON" }));
+      }
     });
   }
 

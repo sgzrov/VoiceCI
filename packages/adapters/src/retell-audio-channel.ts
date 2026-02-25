@@ -1,15 +1,15 @@
 /**
  * Retell Audio Channel
  *
- * Composes a SipAudioChannel for bidirectional audio (Plivo phone call)
- * with Retell's REST API for post-call tool call extraction.
+ * Composes a SipAudioChannel (inbound mode) for bidirectional audio
+ * with Retell's REST API for call creation and tool call extraction.
  *
  * Flow:
- *   1. connect()  — dials the Retell agent's phone number via SIP/Plivo
+ *   1. connect()  — sets up Plivo inbound, then asks Retell to call us
+ *      via POST /v2/create-phone-call → call_id known immediately
  *   2. sendAudio() / on("audio") — bidirectional PCM 24kHz over SIP
  *   3. disconnect() — hangs up the SIP call
- *   4. getCallData() — resolves Retell call_id via list-calls API,
- *      then fetches tool call data from GET /v2/get-call/{id}
+ *   4. getCallData() — fetches tool calls from GET /v2/get-call/{call_id}
  */
 
 import type { ObservedToolCall } from "@voiceci/shared";
@@ -55,11 +55,15 @@ interface RetellCallResponse {
   end_timestamp?: number;
 }
 
+interface RetellCreateCallResponse {
+  call_id: string;
+  call_status: string;
+}
+
 export class RetellAudioChannel extends BaseAudioChannel {
   private config: RetellAudioChannelConfig;
   private sipChannel: SipAudioChannel | null = null;
   private callId: string | null = null;
-  private callStartTimestamp = 0;
 
   constructor(config: RetellAudioChannelConfig) {
     super();
@@ -71,14 +75,36 @@ export class RetellAudioChannel extends BaseAudioChannel {
   }
 
   async connect(): Promise<void> {
-    this.callStartTimestamp = Date.now();
-    this.sipChannel = new SipAudioChannel(this.config.sip);
+    // Start SIP in inbound mode — Plivo app created, number configured, waiting
+    this.sipChannel = new SipAudioChannel({ ...this.config.sip, mode: "inbound" });
 
     this.sipChannel.on("audio", (chunk) => this.emit("audio", chunk));
     this.sipChannel.on("error", (err) => this.emit("error", err));
     this.sipChannel.on("disconnected", () => this.emit("disconnected"));
 
+    // Start the SIP server and configure Plivo number for inbound
     await this.sipChannel.connect();
+
+    // Ask Retell to call our Plivo number — call_id returned immediately
+    const res = await fetch("https://api.retellai.com/v2/create-phone-call", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${this.config.apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        from_number: this.config.sip.phoneNumber,
+        to_number: this.config.sip.fromNumber,
+      }),
+    });
+
+    if (!res.ok) {
+      const errorText = await res.text();
+      throw new Error(`Retell create-phone-call failed (${res.status}): ${errorText}`);
+    }
+
+    const data = (await res.json()) as RetellCreateCallResponse;
+    this.callId = data.call_id;
   }
 
   sendAudio(pcm: Buffer): void {
@@ -96,9 +122,6 @@ export class RetellAudioChannel extends BaseAudioChannel {
   }
 
   async getCallData(): Promise<ObservedToolCall[]> {
-    if (!this.callId) {
-      this.callId = await this.resolveCallId();
-    }
     if (!this.callId) return [];
 
     // Wait for Retell to process the call data
@@ -112,53 +135,6 @@ export class RetellAudioChannel extends BaseAudioChannel {
 
     const data = (await res.json()) as RetellCallResponse;
     return this.parseToolCalls(data);
-  }
-
-  private async resolveCallId(): Promise<string | null> {
-    // Wait for Retell to ingest the call
-    await sleep(3000);
-
-    const maxAttempts = 3;
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      try {
-        const res = await fetch("https://api.retellai.com/v2/list-calls", {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${this.config.apiKey}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            filter_criteria: {
-              agent_id: [this.config.agentId],
-              to_number: [this.config.sip.phoneNumber],
-              from_number: [this.config.sip.fromNumber],
-              call_type: ["phone_call"],
-              start_timestamp: {
-                lower_threshold: this.callStartTimestamp - 30_000,
-              },
-            },
-            sort_order: "descending",
-            limit: 1,
-          }),
-        });
-
-        if (res.ok) {
-          const data = (await res.json()) as RetellCallResponse[];
-          if (data.length > 0) {
-            return data[0].call_id;
-          }
-        }
-      } catch {
-        // Retry on network errors
-      }
-
-      if (attempt < maxAttempts - 1) {
-        await sleep(2000 * (attempt + 1));
-      }
-    }
-
-    console.warn("Retell: could not resolve call_id from list-calls API");
-    return null;
   }
 
   private parseToolCalls(data: RetellCallResponse): ObservedToolCall[] {

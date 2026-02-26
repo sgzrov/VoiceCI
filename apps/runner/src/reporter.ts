@@ -34,3 +34,35 @@ export async function reportResults(results: RunResults): Promise<void> {
 
   console.log("Results reported successfully");
 }
+
+export interface TestProgressPayload {
+  run_id: string;
+  completed: number;
+  total: number;
+  test_type: "audio" | "conversation";
+  test_name: string;
+  status: "pass" | "fail";
+  duration_ms: number;
+}
+
+export async function reportTestProgress(payload: TestProgressPayload): Promise<void> {
+  const callbackUrl = process.env["API_CALLBACK_URL"];
+  if (!callbackUrl) return;
+
+  const secret = process.env["RUNNER_CALLBACK_SECRET"] ?? "";
+  // Derive the progress endpoint from the callback URL
+  const progressUrl = callbackUrl.replace(/\/runner-callback$/, "/test-progress");
+
+  try {
+    await fetch(progressUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        [RUNNER_CALLBACK_HEADER]: secret,
+      },
+      body: JSON.stringify(payload),
+    });
+  } catch {
+    // Best-effort — don't fail the run if progress reporting fails
+  }
+}

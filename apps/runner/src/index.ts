@@ -10,7 +10,7 @@ import type {
 } from "@voiceci/shared";
 import type { AudioChannelConfig } from "@voiceci/adapters";
 import { executeTests } from "./executor.js";
-import { reportResults } from "./reporter.js";
+import { reportResults, reportTestProgress } from "./reporter.js";
 import { waitForHealth } from "./health-check.js";
 
 const WORK_DIR = "/work";
@@ -111,10 +111,29 @@ async function main() {
   };
 
   try {
+    const totalTests =
+      (testSpec.audio_tests?.length ?? 0) + (testSpec.conversation_tests?.length ?? 0);
+    let completedTests = 0;
+
     const { status, audioResults, conversationResults, aggregate } = await executeTests({
       testSpec,
       channelConfig,
       audioTestThresholds,
+      onTestComplete: (result) => {
+        completedTests++;
+        const isAudio = "test_name" in result;
+        void reportTestProgress({
+          run_id: runId,
+          completed: completedTests,
+          total: totalTests,
+          test_type: isAudio ? "audio" : "conversation",
+          test_name: isAudio
+            ? (result as { test_name: string }).test_name
+            : (result as { name?: string }).name ?? "conversation",
+          status: result.status,
+          duration_ms: result.duration_ms,
+        });
+      },
     });
 
     await reportResults({

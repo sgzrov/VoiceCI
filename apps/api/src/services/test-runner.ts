@@ -20,6 +20,7 @@ export interface LoadTestInProcessOpts {
   rampDurationS?: number;
   callerPrompt: string;
   sessionId?: string;
+  progressToken?: string | number;
 }
 
 /**
@@ -27,16 +28,30 @@ export interface LoadTestInProcessOpts {
  * Non-blocking — fires and returns immediately, resolves with result.
  */
 export function runLoadTestInProcess(opts: LoadTestInProcessOpts): void {
-  const { sessionId, ...loadTestOpts } = opts;
+  const { sessionId, progressToken, ...loadTestOpts } = opts;
 
   void (async () => {
     const mcpServer = sessionId ? mcpServers.get(sessionId) : undefined;
+    let timepointCount = 0;
 
     try {
       const result = await runLoadTest({
         ...loadTestOpts,
         onTimepoint: (tp) => {
-          if (mcpServer) {
+          if (!mcpServer) return;
+          timepointCount++;
+
+          if (progressToken !== undefined) {
+            void mcpServer.server.notification({
+              method: "notifications/progress",
+              params: {
+                progressToken,
+                progress: tp.elapsed_s,
+                total: loadTestOpts.totalDurationS,
+                message: `${tp.active_connections} connections | p95=${tp.ttfb_p95_ms}ms | errors=${tp.error_rate.toFixed(2)}`,
+              },
+            }).catch(() => {});
+          } else {
             void mcpServer.sendLoggingMessage({
               level: "info",
               logger: "voiceci:load-test-progress",
@@ -47,22 +62,46 @@ export function runLoadTestInProcess(opts: LoadTestInProcessOpts): void {
       });
 
       if (mcpServer) {
-        await mcpServer.sendLoggingMessage({
-          level: result.status === "pass" ? "info" : "warning",
-          logger: "voiceci:load-test-result",
-          data: result,
-        });
+        if (progressToken !== undefined) {
+          await mcpServer.server.notification({
+            method: "notifications/progress",
+            params: {
+              progressToken,
+              progress: loadTestOpts.totalDurationS,
+              total: loadTestOpts.totalDurationS,
+              message: `${result.status}: ${result.successful_calls}/${result.total_calls} calls, p95=${result.summary.ttfb_p95_ms}ms — call voiceci_get_status for full results`,
+            },
+          });
+        } else {
+          await mcpServer.sendLoggingMessage({
+            level: result.status === "pass" ? "info" : "warning",
+            logger: "voiceci:load-test-result",
+            data: result,
+          });
+        }
       }
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
       console.error("Load test failed:", errorMessage);
 
       if (mcpServer) {
-        await mcpServer.sendLoggingMessage({
-          level: "error",
-          logger: "voiceci:load-test-result",
-          data: { status: "fail", error_text: errorMessage },
-        });
+        if (progressToken !== undefined) {
+          await mcpServer.server.notification({
+            method: "notifications/progress",
+            params: {
+              progressToken,
+              progress: loadTestOpts.totalDurationS,
+              total: loadTestOpts.totalDurationS,
+              message: `fail: ${errorMessage}`,
+            },
+          }).catch(() => {});
+        } else {
+          await mcpServer.sendLoggingMessage({
+            level: "error",
+            logger: "voiceci:load-test-result",
+            data: { status: "fail", error_text: errorMessage },
+          });
+        }
       }
     }
   })();

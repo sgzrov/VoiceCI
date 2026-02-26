@@ -10,6 +10,7 @@
 
 import WebSocket from "ws";
 import type { ObservedToolCall } from "@voiceci/shared";
+import { resample } from "@voiceci/voice";
 import { BaseAudioChannel } from "./audio-channel.js";
 
 export interface VapiAudioChannelConfig {
@@ -106,7 +107,7 @@ export class VapiAudioChannel extends BaseAudioChannel {
       throw new Error("Vapi WebSocket not connected");
     }
     // Resample 24kHz → 16kHz before sending
-    const resampled = resample24kTo16k(pcm);
+    const resampled = resample(pcm, 24000, 16000);
     this.ws.send(resampled);
   }
 
@@ -145,7 +146,7 @@ export class VapiAudioChannel extends BaseAudioChannel {
           if (isBinary) {
             const chunk = data instanceof Buffer ? data : Buffer.from(data as ArrayBuffer);
             // Resample 16kHz → 24kHz before emitting
-            const resampled = resample16kTo24k(chunk);
+            const resampled = resample(chunk, 16000, 24000);
             this.emit("audio", resampled);
           }
           // Ignore text frames (control messages)
@@ -216,42 +217,6 @@ export class VapiAudioChannel extends BaseAudioChannel {
 
     return toolCalls;
   }
-}
-
-/** Simple linear interpolation resample from 24kHz to 16kHz (16-bit PCM) */
-function resample24kTo16k(pcm24k: Buffer): Buffer {
-  const samples24 = new Int16Array(pcm24k.buffer, pcm24k.byteOffset, pcm24k.byteLength / 2);
-  const numSamples16 = Math.floor(samples24.length * 16000 / 24000);
-  const samples16 = new Int16Array(numSamples16);
-
-  for (let i = 0; i < numSamples16; i++) {
-    const srcIndex = (i * 24000) / 16000;
-    const idx = Math.floor(srcIndex);
-    const frac = srcIndex - idx;
-    const s0 = samples24[idx]!;
-    const s1 = idx + 1 < samples24.length ? samples24[idx + 1]! : s0;
-    samples16[i] = Math.round(s0 + frac * (s1 - s0));
-  }
-
-  return Buffer.from(samples16.buffer);
-}
-
-/** Simple linear interpolation resample from 16kHz to 24kHz (16-bit PCM) */
-function resample16kTo24k(pcm16k: Buffer): Buffer {
-  const samples16 = new Int16Array(pcm16k.buffer, pcm16k.byteOffset, pcm16k.byteLength / 2);
-  const numSamples24 = Math.floor(samples16.length * 24000 / 16000);
-  const samples24 = new Int16Array(numSamples24);
-
-  for (let i = 0; i < numSamples24; i++) {
-    const srcIndex = (i * 16000) / 24000;
-    const idx = Math.floor(srcIndex);
-    const frac = srcIndex - idx;
-    const s0 = samples16[idx]!;
-    const s1 = idx + 1 < samples16.length ? samples16[idx + 1]! : s0;
-    samples24[i] = Math.round(s0 + frac * (s1 - s0));
-  }
-
-  return Buffer.from(samples24.buffer);
 }
 
 function sleep(ms: number): Promise<void> {

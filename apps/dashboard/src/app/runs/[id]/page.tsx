@@ -11,7 +11,7 @@ import { ScenarioTable } from "@/components/scenario-table";
 import { TraceViewer } from "@/components/trace-viewer";
 import { BaselineDiff } from "@/components/baseline-diff";
 
-const API_URL = process.env["NEXT_PUBLIC_API_URL"] ?? "http://localhost:3000";
+const API_URL = "/backend";
 
 interface RunDetail {
   id: string;
@@ -63,7 +63,9 @@ export default function RunDetailPage() {
 
   useEffect(() => {
     const fetchRun = async () => {
-      const res = await fetch(`${API_URL}/runs/${id}`);
+      const res = await fetch(`${API_URL}/runs/${id}`, {
+        credentials: "include",
+      });
       const data = await res.json();
       setRun(data);
     };
@@ -74,8 +76,13 @@ export default function RunDetailPage() {
   }, [id]);
 
   const handleSetBaseline = async () => {
-    await fetch(`${API_URL}/runs/${id}/baseline`, { method: "POST" });
-    const res = await fetch(`${API_URL}/runs/${id}`);
+    await fetch(`${API_URL}/runs/${id}/baseline`, {
+      method: "POST",
+      credentials: "include",
+    });
+    const res = await fetch(`${API_URL}/runs/${id}`, {
+      credentials: "include",
+    });
     setRun(await res.json());
   };
 

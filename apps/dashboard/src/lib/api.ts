@@ -1,10 +1,11 @@
-const API_URL = process.env["NEXT_PUBLIC_API_URL"] ?? "http://localhost:3000";
+const API_URL = "/backend";
 
 export async function fetchRuns(status?: string) {
   const params = new URLSearchParams();
   if (status) params.set("status", status);
   const res = await fetch(`${API_URL}/runs?${params}`, {
     cache: "no-store",
+    credentials: "include",
   });
   if (!res.ok) throw new Error(`Failed to fetch runs: ${res.status}`);
   return res.json();
@@ -13,6 +14,7 @@ export async function fetchRuns(status?: string) {
 export async function fetchRun(id: string) {
   const res = await fetch(`${API_URL}/runs/${id}`, {
     cache: "no-store",
+    credentials: "include",
   });
   if (!res.ok) throw new Error(`Failed to fetch run: ${res.status}`);
   return res.json();
@@ -21,6 +23,7 @@ export async function fetchRun(id: string) {
 export async function setBaseline(runId: string) {
   const res = await fetch(`${API_URL}/runs/${runId}/baseline`, {
     method: "POST",
+    credentials: "include",
   });
   if (!res.ok) throw new Error(`Failed to set baseline: ${res.status}`);
   return res.json();
@@ -45,7 +48,10 @@ export interface CreateKeyResponse {
 }
 
 export async function fetchApiKeys(): Promise<ApiKey[]> {
-  const res = await fetch(`${API_URL}/keys`, { cache: "no-store" });
+  const res = await fetch(`${API_URL}/keys`, {
+    cache: "no-store",
+    credentials: "include",
+  });
   if (!res.ok) throw new Error(`Failed to fetch API keys: ${res.status}`);
   return res.json();
 }
@@ -54,6 +60,7 @@ export async function createApiKey(name: string): Promise<CreateKeyResponse> {
   const res = await fetch(`${API_URL}/keys`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    credentials: "include",
     body: JSON.stringify({ name }),
   });
   if (!res.ok) throw new Error(`Failed to create API key: ${res.status}`);
@@ -61,6 +68,9 @@ export async function createApiKey(name: string): Promise<CreateKeyResponse> {
 }
 
 export async function revokeApiKey(id: string): Promise<void> {
-  const res = await fetch(`${API_URL}/keys/${id}`, { method: "DELETE" });
+  const res = await fetch(`${API_URL}/keys/${id}`, {
+    method: "DELETE",
+    credentials: "include",
+  });
   if (!res.ok) throw new Error(`Failed to revoke API key: ${res.status}`);
 }

@@ -27,6 +27,7 @@ export const runs = pgTable("runs", {
   api_key_id: uuid("api_key_id")
     .notNull()
     .references(() => apiKeys.id),
+  user_id: text("user_id").notNull(),
   status: runStatusEnum("status").notNull().default("queued"),
   source_type: sourceTypeEnum("source_type").notNull(),
   bundle_key: text("bundle_key"),
@@ -63,6 +64,7 @@ export const baselines = pgTable("baselines", {
   run_id: uuid("run_id")
     .notNull()
     .references(() => runs.id, { onDelete: "cascade" }),
+  user_id: text("user_id").notNull(),
   created_at: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
@@ -90,6 +92,7 @@ export const depImages = pgTable("dep_images", {
 
 export const apiKeys = pgTable("api_keys", {
   id: uuid("id").primaryKey().defaultRandom(),
+  user_id: text("user_id").notNull(),
   key_hash: text("key_hash").notNull().unique(),
   name: text("name").notNull(),
   prefix: text("prefix").notNull().default(""),

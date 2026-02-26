@@ -6,11 +6,13 @@
 import type { AudioChannelConfig } from "@voiceci/adapters";
 import type { LoadPattern } from "@voiceci/shared";
 import { runLoadTest } from "@voiceci/runner/load-test";
-import { mcpServers } from "../routes/mcp.js";
+import { mcpServers } from "../routes/mcp/session.js";
 
 // ============================================================
 // Load testing
 // ============================================================
+
+const activeLoadTests = new Set<Promise<void>>();
 
 export interface LoadTestInProcessOpts {
   channelConfig: AudioChannelConfig;
@@ -25,12 +27,12 @@ export interface LoadTestInProcessOpts {
 
 /**
  * Run load test in-process and push results via SSE.
- * Non-blocking — fires and returns immediately, resolves with result.
+ * Non-blocking — fires and returns immediately.
  */
 export function runLoadTestInProcess(opts: LoadTestInProcessOpts): void {
   const { sessionId, progressToken, ...loadTestOpts } = opts;
 
-  void (async () => {
+  const promise = (async () => {
     const mcpServer = sessionId ? mcpServers.get(sessionId) : undefined;
     let timepointCount = 0;
 
@@ -105,4 +107,17 @@ export function runLoadTestInProcess(opts: LoadTestInProcessOpts): void {
       }
     }
   })();
+
+  activeLoadTests.add(promise);
+  void promise.finally(() => activeLoadTests.delete(promise));
+}
+
+/**
+ * Wait for all active load tests to finish. Call during graceful shutdown.
+ */
+export async function drainLoadTests(): Promise<void> {
+  if (activeLoadTests.size > 0) {
+    console.log(`Waiting for ${activeLoadTests.size} active load test(s) to finish...`);
+    await Promise.allSettled(activeLoadTests);
+  }
 }

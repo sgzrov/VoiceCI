@@ -7,7 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/status-badge";
 
-const API_URL = process.env["NEXT_PUBLIC_API_URL"] ?? "http://localhost:3000";
+const API_URL = "/backend";
 
 interface Run {
   id: string;
@@ -27,12 +27,26 @@ export default function RunsPage() {
   const [filter, setFilter] = useState<string>("");
   const [loading, setLoading] = useState(true);
 
+  const [error, setError] = useState<string | null>(null);
+
   useEffect(() => {
     const fetchRuns = async () => {
       const params = new URLSearchParams();
       if (filter) params.set("status", filter);
-      const res = await fetch(`${API_URL}/runs?${params}`);
+      const res = await fetch(`${API_URL}/runs?${params}`, {
+        credentials: "include",
+      });
+      if (res.status === 401) {
+        // Session expired — reload to let middleware refresh it
+        window.location.reload();
+        return;
+      }
       const data = await res.json();
+      if (!res.ok || !Array.isArray(data)) {
+        setError(`API ${res.status}: ${JSON.stringify(data)}`);
+        setLoading(false);
+        return;
+      }
       setRuns(data);
       setLoading(false);
     };
@@ -60,7 +74,9 @@ export default function RunsPage() {
         </div>
       </div>
 
-      {loading ? (
+      {error ? (
+        <p className="text-red-400 font-mono text-sm">{error}</p>
+      ) : loading ? (
         <p className="text-muted-foreground">Loading...</p>
       ) : runs.length === 0 ? (
         <p className="text-muted-foreground">No runs found.</p>

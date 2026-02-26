@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { eq, desc } from "drizzle-orm";
+import { eq, and, desc } from "drizzle-orm";
 import { schema } from "@voiceci/db";
 import { z } from "zod";
 
@@ -10,7 +10,7 @@ const CreateRunBody = z.object({
 });
 
 export async function runRoutes(app: FastifyInstance) {
-  const authPreHandler = { preHandler: app.verifyApiKey };
+  const authPreHandler = { preHandler: app.verifyAuth };
 
   app.post("/runs", authPreHandler, async (request, reply) => {
     const body = CreateRunBody.parse(request.body);
@@ -19,6 +19,7 @@ export async function runRoutes(app: FastifyInstance) {
       .insert(schema.runs)
       .values({
         api_key_id: request.apiKeyId!,
+        user_id: request.userId!,
         source_type: body.source_type,
         bundle_key: body.bundle_key,
         bundle_hash: body.bundle_hash,
@@ -26,7 +27,7 @@ export async function runRoutes(app: FastifyInstance) {
       })
       .returning();
 
-    await app.getRunQueue(request.apiKeyId!).add("execute-run", {
+    await app.getRunQueue(request.userId!).add("execute-run", {
       run_id: run!.id,
       bundle_key: body.bundle_key,
       bundle_hash: body.bundle_hash,
@@ -35,33 +36,39 @@ export async function runRoutes(app: FastifyInstance) {
     return reply.status(201).send(run);
   });
 
-  app.get("/runs", async (request, reply) => {
+  app.get("/runs", authPreHandler, async (request, reply) => {
     const query = request.query as { status?: string; limit?: string };
     const limit = Math.min(parseInt(query.limit ?? "50", 10), 200);
 
-    let q = app.db
+    const conditions = [eq(schema.runs.user_id, request.userId!)];
+    if (query.status) {
+      conditions.push(
+        eq(schema.runs.status, query.status as "queued" | "running" | "pass" | "fail"),
+      );
+    }
+
+    const rows = await app.db
       .select()
       .from(schema.runs)
+      .where(and(...conditions))
       .orderBy(desc(schema.runs.created_at))
       .limit(limit);
 
-    if (query.status) {
-      q = q.where(
-        eq(schema.runs.status, query.status as "queued" | "running" | "pass" | "fail")
-      ) as typeof q;
-    }
-
-    const rows = await q;
     return reply.send(rows);
   });
 
-  app.get<{ Params: { id: string } }>("/runs/:id", async (request, reply) => {
+  app.get<{ Params: { id: string } }>("/runs/:id", authPreHandler, async (request, reply) => {
     const { id } = request.params;
 
     const [run] = await app.db
       .select()
       .from(schema.runs)
-      .where(eq(schema.runs.id, id))
+      .where(
+        and(
+          eq(schema.runs.id, id),
+          eq(schema.runs.user_id, request.userId!),
+        )
+      )
       .limit(1);
 
     if (!run) {
@@ -94,13 +101,19 @@ export async function runRoutes(app: FastifyInstance) {
 
   app.post<{ Params: { id: string } }>(
     "/runs/:id/baseline",
+    authPreHandler,
     async (request, reply) => {
       const { id } = request.params;
 
       const [run] = await app.db
         .select()
         .from(schema.runs)
-        .where(eq(schema.runs.id, id))
+        .where(
+          and(
+            eq(schema.runs.id, id),
+            eq(schema.runs.user_id, request.userId!),
+          )
+        )
         .limit(1);
 
       if (!run) {
@@ -109,7 +122,7 @@ export async function runRoutes(app: FastifyInstance) {
 
       const [baseline] = await app.db
         .insert(schema.baselines)
-        .values({ run_id: id })
+        .values({ run_id: id, user_id: request.userId! })
         .returning();
 
       return reply.status(201).send(baseline);

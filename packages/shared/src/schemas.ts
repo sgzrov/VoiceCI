@@ -241,30 +241,3 @@ export const LoadTestResultSchema = z.object({
   }),
   duration_ms: z.number(),
 });
-
-// ============================================================
-// voice-ci.json project configuration schema
-// ============================================================
-
-export const VoiceCIConfigSchema = z.object({
-  version: z.string().default("1.0"),
-  agent: z.object({
-    name: z.string().min(1),
-    description: z.string().min(1),
-  }),
-  connection: z.object({
-    adapter: AdapterTypeSchema,
-    target_phone_number: z.string().optional(),
-    start_command: z.string().optional(),
-    health_endpoint: z.string().default("/health"),
-    agent_url: z.string().default("http://localhost:3001"),
-  }),
-  voice: z
-    .object({
-      tts: z.object({ voice_id: z.string().optional(), api_key_env: z.string().optional() }).optional(),
-      stt: z.object({ api_key_env: z.string().optional() }).optional(),
-      silence_threshold_ms: z.number().optional(),
-      webrtc: z.object({ room: z.string().optional() }).optional(),
-    })
-    .optional(),
-});

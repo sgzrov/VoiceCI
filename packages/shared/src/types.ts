@@ -263,23 +263,3 @@ export interface LoadTestResult {
   };
   duration_ms: number;
 }
-
-// ============================================================
-// voice-ci.json project configuration
-// ============================================================
-
-export interface VoiceCIConfig {
-  version: string;
-  agent: {
-    name: string;
-    description: string;
-  };
-  connection: {
-    adapter: AdapterType;
-    target_phone_number?: string;
-    start_command?: string;
-    health_endpoint?: string;
-    agent_url?: string;
-  };
-  voice?: VoiceConfig;
-}

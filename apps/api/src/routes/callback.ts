@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { eq } from "drizzle-orm";
 import { schema } from "@voiceci/db";
 import { RunnerCallbackV2Schema, RUNNER_CALLBACK_HEADER } from "@voiceci/shared";
-import { runToSession, runToProgress, mcpServers } from "./mcp.js";
+import { runToSession, runToProgress, mcpServers } from "./mcp/session.js";
 
 export async function callbackRoutes(app: FastifyInstance) {
   // --- Builder dep-image callback ---

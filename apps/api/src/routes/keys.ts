@@ -4,11 +4,12 @@ import { eq, and, isNull, desc } from "drizzle-orm";
 import { schema } from "@voiceci/db";
 
 export async function keyRoutes(app: FastifyInstance) {
-  app.post("/keys", async (request, reply) => {
+  const authPreHandler = { preHandler: app.verifyAuth };
+
+  app.post("/keys", authPreHandler, async (request, reply) => {
     const body = request.body as { name?: string } | undefined;
     const name = body?.name ?? "default";
 
-    // Generate a random API key with a voiceci_ prefix
     const rawKey = `voiceci_${randomBytes(24).toString("hex")}`;
     const keyHash = createHash("sha256").update(rawKey).digest("hex");
     const prefix = rawKey.slice(0, 12);
@@ -16,13 +17,13 @@ export async function keyRoutes(app: FastifyInstance) {
     const [row] = await app.db
       .insert(schema.apiKeys)
       .values({
+        user_id: request.userId!,
         key_hash: keyHash,
         name,
         prefix,
       })
       .returning();
 
-    // Return the raw key once — it can never be retrieved again
     return reply.status(201).send({
       id: row!.id,
       api_key: rawKey,
@@ -33,7 +34,7 @@ export async function keyRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get("/keys", async (_request, reply) => {
+  app.get("/keys", authPreHandler, async (request, reply) => {
     const rows = await app.db
       .select({
         id: schema.apiKeys.id,
@@ -43,6 +44,7 @@ export async function keyRoutes(app: FastifyInstance) {
         revoked_at: schema.apiKeys.revoked_at,
       })
       .from(schema.apiKeys)
+      .where(eq(schema.apiKeys.user_id, request.userId!))
       .orderBy(desc(schema.apiKeys.created_at));
 
     const keys = rows.map((row) => ({
@@ -55,6 +57,7 @@ export async function keyRoutes(app: FastifyInstance) {
 
   app.delete<{ Params: { id: string } }>(
     "/keys/:id",
+    authPreHandler,
     async (request, reply) => {
       const { id } = request.params;
 
@@ -62,7 +65,11 @@ export async function keyRoutes(app: FastifyInstance) {
         .update(schema.apiKeys)
         .set({ revoked_at: new Date() })
         .where(
-          and(eq(schema.apiKeys.id, id), isNull(schema.apiKeys.revoked_at))
+          and(
+            eq(schema.apiKeys.id, id),
+            eq(schema.apiKeys.user_id, request.userId!),
+            isNull(schema.apiKeys.revoked_at),
+          )
         )
         .returning();
 

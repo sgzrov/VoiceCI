@@ -94,11 +94,24 @@ export async function executeTests(opts: ExecuteTestsOpts): Promise<ExecuteTests
   const totalTests = audioTasks.length + conversationTasks.length;
   console.log(`Running ${totalTests} tests in parallel (concurrency: ${concurrencyLimit})...`);
 
-  // Run audio and conversation tests concurrently (within the shared concurrency limit)
-  const [audioResults, conversationResults] = await Promise.all([
-    runWithConcurrency(audioTasks, concurrencyLimit),
-    runWithConcurrency(conversationTasks, concurrencyLimit),
-  ]);
+  // Merge into a single pool so the concurrency limit is truly shared
+  type TaggedResult =
+    | { type: "audio"; result: AudioTestResult }
+    | { type: "conversation"; result: ConversationTestResult };
+
+  const allTasks: (() => Promise<TaggedResult>)[] = [
+    ...audioTasks.map((task) => async (): Promise<TaggedResult> => ({ type: "audio", result: await task() })),
+    ...conversationTasks.map((task) => async (): Promise<TaggedResult> => ({ type: "conversation", result: await task() })),
+  ];
+
+  const allResults = await runWithConcurrency(allTasks, concurrencyLimit);
+
+  const audioResults = allResults
+    .filter((r): r is Extract<TaggedResult, { type: "audio" }> => r.type === "audio")
+    .map((r) => r.result);
+  const conversationResults = allResults
+    .filter((r): r is Extract<TaggedResult, { type: "conversation" }> => r.type === "conversation")
+    .map((r) => r.result);
 
   const audioPassed = audioResults.filter((r) => r.status === "pass").length;
   const audioFailed = audioResults.filter((r) => r.status === "fail").length;

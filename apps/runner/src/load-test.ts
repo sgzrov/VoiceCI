@@ -89,14 +89,14 @@ async function runSingleCall(
     const sendTime = Date.now();
     channel.sendAudio(preRecordedAudio);
 
-    const { audio } = await collectUntilEndOfTurn(channel, {
+    const { audio, stats } = await collectUntilEndOfTurn(channel, {
       timeoutMs: 15000,
       silenceThresholdMs: 2000,
     });
 
-    const elapsed = Date.now() - sendTime;
-    const responseDurationMs = audio.length > 0 ? Math.round((audio.length / 2 / 24000) * 1000) : 0;
-    const ttfbMs = Math.max(0, elapsed - responseDurationMs);
+    const ttfbMs = audio.length > 0 && stats.firstChunkAt !== null
+      ? Math.max(0, stats.firstChunkAt - sendTime)
+      : 0;
 
     return {
       success: true,

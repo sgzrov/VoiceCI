@@ -1,4 +1,4 @@
-import { RUNNER_CALLBACK_HEADER } from "@voiceci/shared";
+import { RUNNER_CALLBACK_HEADER, withRetry } from "@voiceci/shared";
 import type { AudioTestResult, ConversationTestResult, RunAggregateV2 } from "@voiceci/shared";
 
 export interface RunResults {
@@ -18,19 +18,27 @@ export async function reportResults(results: RunResults): Promise<void> {
 
   const secret = process.env["RUNNER_CALLBACK_SECRET"] ?? "";
 
-  const response = await fetch(callbackUrl, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      [RUNNER_CALLBACK_HEADER]: secret,
-    },
-    body: JSON.stringify(results),
-  });
+  await withRetry(async () => {
+    const response = await fetch(callbackUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        [RUNNER_CALLBACK_HEADER]: secret,
+      },
+      body: JSON.stringify(results),
+    });
 
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`Failed to report results: ${response.status} ${text}`);
-  }
+    if (!response.ok) {
+      if (response.status === 408 || response.status === 429 || response.status >= 500) {
+        throw Object.assign(
+          new Error(`Result callback retryable (${response.status})`),
+          { retryable: true },
+        );
+      }
+      const text = await response.text();
+      throw new Error(`Failed to report results: ${response.status} ${text}`);
+    }
+  }, { maxRetries: 3, baseDelayMs: 1000 });
 
   console.log("Results reported successfully");
 }

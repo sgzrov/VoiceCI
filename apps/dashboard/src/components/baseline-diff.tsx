@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 
-const API_URL = process.env["NEXT_PUBLIC_API_URL"] ?? "http://localhost:3000";
+const API_URL = "/backend";
 
 interface BaselineDiffProps {
   runId: string;
@@ -29,7 +29,9 @@ export function BaselineDiff({ runId, currentMetrics }: BaselineDiffProps) {
   useEffect(() => {
     const fetchBaseline = async () => {
       try {
-        const res = await fetch(`${API_URL}/runs?limit=200`);
+        const res = await fetch(`${API_URL}/runs?limit=200`, {
+          credentials: "include",
+        });
         const runs = (await res.json()) as Array<{
           id: string;
           aggregate_json: Record<string, unknown> | null;
@@ -37,7 +39,9 @@ export function BaselineDiff({ runId, currentMetrics }: BaselineDiffProps) {
 
         for (const run of runs) {
           if (run.id === runId) continue;
-          const detailRes = await fetch(`${API_URL}/runs/${run.id}`);
+          const detailRes = await fetch(`${API_URL}/runs/${run.id}`, {
+            credentials: "include",
+          });
           const detail = await detailRes.json();
           if (detail.is_baseline && detail.aggregate_json) {
             setBaselineMetrics(detail.aggregate_json);

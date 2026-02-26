@@ -50,17 +50,9 @@ export class JudgeLLM {
     evalQuestions: string[]
   ): Promise<EvalResult[]> {
     const formattedTranscript = formatTranscript(transcript);
-    const results: EvalResult[] = [];
-
-    for (const question of evalQuestions) {
-      const result = await this.evaluateQuestion(
-        formattedTranscript,
-        question
-      );
-      results.push(result);
-    }
-
-    return results;
+    return Promise.all(
+      evalQuestions.map((q) => this.evaluateQuestion(formattedTranscript, q))
+    );
   }
 
   /**
@@ -198,14 +190,9 @@ Be strict but fair.`,
     const formattedToolCalls = formatToolCalls(observedToolCalls);
     const context = `TRANSCRIPT:\n${formattedTranscript}\n\nTOOL CALLS OBSERVED:\n${formattedToolCalls}`;
 
-    const results: EvalResult[] = [];
-
-    for (const question of evalQuestions) {
-      const result = await this.evaluateToolCallQuestion(context, question);
-      results.push(result);
-    }
-
-    return results;
+    return Promise.all(
+      evalQuestions.map((q) => this.evaluateToolCallQuestion(context, q))
+    );
   }
 
   private async evaluateToolCallQuestion(
@@ -263,60 +250,19 @@ Set "relevant" to false if the conversation didn't touch on the subject of the c
     transcript: string,
     question: string
   ): Promise<EvalResult> {
-    // Step 1: Relevancy check
-    const relevancy = await this.client.messages.create({
+    const response = await this.client.messages.create({
       model: MODEL,
       max_tokens: MAX_TOKENS,
       temperature: 0,
-      system: `You are evaluating a voice agent conversation transcript. Determine if the following eval question is relevant to what actually happened in the conversation.
+      system: `You are evaluating a voice agent's performance based on a conversation transcript.
 
-A question is RELEVANT if the conversation provides enough information to evaluate it. A question is NOT RELEVANT if the conversation topic never touched on the subject.
+First determine if the criterion is RELEVANT — did the conversation touch on the subject? A criterion is NOT relevant if the topic never came up.
 
-Respond with ONLY a JSON object: {"relevant": true/false, "reasoning": "brief explanation"}`,
-      messages: [
-        {
-          role: "user",
-          content: `TRANSCRIPT:\n${transcript}\n\nEVAL QUESTION: ${question}`,
-        },
-      ],
-    });
+Then, if relevant, determine if the agent PASSES or FAILS the criterion. Be strict but fair.
 
-    const relevancyText =
-      relevancy.content[0]?.type === "text" ? relevancy.content[0].text : "";
+Respond with ONLY a JSON object: {"relevant": true/false, "passed": true/false, "reasoning": "brief explanation"}
 
-    let relevant = true;
-    let relevancyReasoning = "";
-    try {
-      const parsed = JSON.parse(relevancyText) as {
-        relevant: boolean;
-        reasoning: string;
-      };
-      relevant = parsed.relevant;
-      relevancyReasoning = parsed.reasoning;
-    } catch {
-      // If parsing fails, assume relevant
-      relevant = true;
-    }
-
-    if (!relevant) {
-      return {
-        question,
-        relevant: false,
-        passed: true, // Not relevant → not counted as failure
-        reasoning: `Not relevant: ${relevancyReasoning}`,
-      };
-    }
-
-    // Step 2: Judgment (only if relevant)
-    const judgment = await this.client.messages.create({
-      model: MODEL,
-      max_tokens: MAX_TOKENS,
-      temperature: 0,
-      system: `You are evaluating a voice agent's performance. Based on the transcript, determine if the agent PASSES or FAILS the given criterion.
-
-Be strict but fair. The agent should demonstrate the expected behavior clearly.
-
-Respond with ONLY a JSON object: {"passed": true/false, "reasoning": "brief explanation"}`,
+Set "relevant" to false if the conversation didn't touch on the subject of the criterion.`,
       messages: [
         {
           role: "user",
@@ -325,28 +271,27 @@ Respond with ONLY a JSON object: {"passed": true/false, "reasoning": "brief expl
       ],
     });
 
-    const judgmentText =
-      judgment.content[0]?.type === "text" ? judgment.content[0].text : "";
+    const text = response.content[0]?.type === "text" ? response.content[0].text : "";
 
-    let passed = false;
-    let judgmentReasoning = "";
     try {
-      const parsed = JSON.parse(judgmentText) as {
+      const parsed = JSON.parse(text) as {
+        relevant: boolean;
         passed: boolean;
         reasoning: string;
       };
-      passed = parsed.passed;
-      judgmentReasoning = parsed.reasoning;
+      return {
+        question,
+        relevant: parsed.relevant,
+        passed: parsed.relevant ? parsed.passed : true,
+        reasoning: parsed.reasoning,
+      };
     } catch {
-      passed = false;
-      judgmentReasoning = "Failed to parse judge response";
+      return {
+        question,
+        relevant: true,
+        passed: false,
+        reasoning: "Failed to parse judge response",
+      };
     }
-
-    return {
-      question,
-      relevant: true,
-      passed,
-      reasoning: judgmentReasoning,
-    };
   }
 }

@@ -270,11 +270,16 @@ async function executeRemoteRun(db: Database, job: RunJob): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Module-level DB — single connection pool shared across all jobs
+// ---------------------------------------------------------------------------
+
+const db = createDb(process.env["DATABASE_URL"]!);
+
+// ---------------------------------------------------------------------------
 // Main run executor
 // ---------------------------------------------------------------------------
 
 export async function executeRun(job: RunJob): Promise<void> {
-  const db = createDb(process.env["DATABASE_URL"]!);
 
   await db
     .update(schema.runs)

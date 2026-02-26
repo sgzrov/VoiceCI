@@ -83,13 +83,10 @@ export async function runConversationTest(
 
       const agentTimestamp = performance.now() - startTime;
 
-      // Measure TTFB
+      // Measure TTFB from first audio chunk timestamp
       let turnTtfb: number | undefined;
-      if (agentAudio.length > 0) {
-        // Approximate TTFB from the time gap
-        const responseDurationMs = Math.round((agentAudio.length / 2 / 24000) * 1000);
-        const elapsed = Date.now() - sendTime;
-        turnTtfb = Math.max(0, elapsed - responseDurationMs);
+      if (agentAudio.length > 0 && stats.firstChunkAt !== null) {
+        turnTtfb = Math.max(0, stats.firstChunkAt - sendTime);
         ttfbValues.push(turnTtfb);
       }
 

@@ -17,6 +17,7 @@ import { runLoadTestInProcess } from "../services/test-runner.js";
 export const transports = new Map<string, StreamableHTTPServerTransport>();
 export const mcpServers = new Map<string, McpServer>();
 export const runToSession = new Map<string, string>(); // run_id → session_id
+export const runToProgress = new Map<string, string | number>(); // run_id → progressToken
 
 function cleanupSession(sessionId: string) {
   transports.delete(sessionId);
@@ -31,12 +32,10 @@ function cleanupSession(sessionId: string) {
 }
 
 // ============================================================
-// Testing documentation returned by get_testing_docs
+// Testing documentation — split into focused sections
 // ============================================================
 
-const TESTING_DOCS = `# VoiceCI Testing Documentation
-
-## Audio Tests Reference
+const AUDIO_TEST_REFERENCE = `# Audio Tests Reference
 
 Tests run in parallel with independent connections. For already-deployed agents (SIP, WebRTC, or ws-voice with agent_url), tests run instantly with no infrastructure overhead.
 
@@ -50,6 +49,42 @@ Tests run in parallel with independent connections. For already-deployed agents 
 | response_completeness | Non-truncated, complete sentence responses (≥15 words) | Agents giving detailed answers | ~15s |
 
 ---
+
+## Audio Test Thresholds (Defaults)
+
+You can override any threshold via \`audio_test_thresholds\` in voiceci_run_suite:
+
+| Test | Threshold | Default | Override Key |
+|------|-----------|---------|-------------|
+| echo | Loop threshold (unprompted responses) | 2 | \`echo.loop_threshold\` |
+| ttfb | p95 latency | 3000ms | \`ttfb.p95_threshold_ms\` |
+| barge_in | Stop latency | 2000ms | \`barge_in.stop_threshold_ms\` |
+| silence_handling | Silence duration | 8000ms | \`silence_handling.silence_duration_ms\` |
+| response_completeness | Minimum words | 15 | \`response_completeness.min_word_count\` |
+
+---
+
+## Audio Analysis Metrics (VAD-Derived)
+
+Every conversation test includes \`metrics.audio_analysis\` — VAD-based speech/silence analysis of the agent's audio. These are computed from actual audio waveforms, not turn-level approximations.
+
+| Metric | What it means | Healthy range | Flag when |
+|--------|--------------|---------------|-----------|
+| \`agent_speech_ratio\` | % of agent's air time that is actual speech (vs silence/pauses) | 0.6-0.9 | <0.5 (agent mostly silent — possible audio issue or very long thinking pauses) |
+| \`talk_ratio_vad\` | VAD-corrected ratio: caller time / (caller + agent speech). More accurate than \`talk_ratio\` | 0.3-0.7 | >0.7 (caller dominates — agent not saying enough) or <0.3 (agent monologuing) |
+| \`longest_monologue_ms\` | Longest continuous agent speech segment | <15,000ms | >30,000ms (agent talked 30+ seconds without pause — poor conversational style) |
+| \`silence_gaps_over_2s\` | Count of >2s silences within agent responses | 0-1 per call | ≥3 (frequent long pauses — agent is slow or struggling) |
+| \`total_internal_silence_ms\` | Total silence within agent turns (not between-turn gaps) | Varies | High relative to total agent audio = agent has processing issues |
+| \`per_turn_speech_segments\` | Speech bursts per agent turn [array] | 1-3 per turn | Many segments (>5) = agent speech is very choppy/fragmented |
+| \`mean_agent_speech_segment_ms\` | Average speech burst duration | 2000-8000ms | <500ms (extremely choppy) or >20,000ms (long monologue) |
+
+**How to use these in analysis:**
+- If \`agent_speech_ratio\` is low but conversation passed evals → the agent works but has latency/audio issues worth investigating
+- If \`silence_gaps_over_2s\` is high → the agent is likely doing slow tool calls or LLM inference mid-response. Check \`silence_threshold_ms\` tuning
+- If \`longest_monologue_ms\` is very high → the agent gives excessively long responses without pausing for feedback. This is a prompt/conversation design issue
+- Compare \`talk_ratio_vad\` (VAD-corrected) with \`talk_ratio\` (buffer-based) — a big gap means agent audio contains significant silence that buffer-based ratio misses`;
+
+const SCENARIO_GUIDE = `# Scenario Design Guide
 
 ## Agent Analysis (Do This First)
 
@@ -217,9 +252,9 @@ Sets the **starting** silence threshold for end-of-turn detection (default: 1500
 The adaptive system handles the cases where a fixed threshold fails:
 - **Thinking pauses**: Agent pauses mid-sentence to consider → threshold increases automatically
 - **Tool call gaps**: Agent goes silent while calling an API → threshold increases for that pattern
-- **Variable pacing**: Agent gives short answers sometimes, long answers other times → threshold tracks the cadence
+- **Variable pacing**: Agent gives short answers sometimes, long answers other times → threshold tracks the cadence`;
 
----
+const EVAL_EXAMPLES = `# Eval & Red-Teaming Guide
 
 ## Red-Teaming & Security Testing
 
@@ -273,94 +308,6 @@ The adaptive system handles the cases where a fixed threshold fails:
 
 ---
 
-## Interpreting Results
-
-### Audio Test Failures
-- **echo fail**: Agent has a feedback loop (STT picks up TTS output). Check audio pipeline isolation, echo cancellation.
-- **ttfb fail**: p95 latency > 3000ms. Check LLM inference time, TTS generation speed, network latency.
-- **barge_in fail**: Agent took > 2000ms to stop after interruption. Check VAD configuration, stream handling.
-- **silence_handling fail**: Agent disconnected during silence. Check WebSocket timeout settings, keep-alive config.
-- **connection_stability fail**: Disconnected mid-conversation. Check WebSocket reconnection logic, memory leaks.
-- **response_completeness fail**: Truncated response (< 15 words or missing sentence-ending punctuation). Check max_tokens, streaming termination.
-
-### Conversation Test Failures
-- Read the judge's \`reasoning\` field — it explains WHY.
-- \`relevant: false\` means the conversation didn't cover that eval topic — NOT a failure.
-- \`relevant: true, passed: false\` is a real failure.
-- When a failure occurs, consider running a deeper follow-up test (more turns, more specific scenario) to confirm.
-
-### Audio Analysis Metrics (VAD-Derived)
-
-Every conversation test now includes \`metrics.audio_analysis\` — VAD-based speech/silence analysis of the agent's audio. These are computed from actual audio waveforms, not turn-level approximations.
-
-| Metric | What it means | Healthy range | Flag when |
-|--------|--------------|---------------|-----------|
-| \`agent_speech_ratio\` | % of agent's air time that is actual speech (vs silence/pauses) | 0.6-0.9 | <0.5 (agent mostly silent — possible audio issue or very long thinking pauses) |
-| \`talk_ratio_vad\` | VAD-corrected ratio: caller time / (caller + agent speech). More accurate than \`talk_ratio\` | 0.3-0.7 | >0.7 (caller dominates — agent not saying enough) or <0.3 (agent monologuing) |
-| \`longest_monologue_ms\` | Longest continuous agent speech segment | <15,000ms | >30,000ms (agent talked 30+ seconds without pause — poor conversational style) |
-| \`silence_gaps_over_2s\` | Count of >2s silences within agent responses | 0-1 per call | ≥3 (frequent long pauses — agent is slow or struggling) |
-| \`total_internal_silence_ms\` | Total silence within agent turns (not between-turn gaps) | Varies | High relative to total agent audio = agent has processing issues |
-| \`per_turn_speech_segments\` | Speech bursts per agent turn [array] | 1-3 per turn | Many segments (>5) = agent speech is very choppy/fragmented |
-| \`mean_agent_speech_segment_ms\` | Average speech burst duration | 2000-8000ms | <500ms (extremely choppy) or >20,000ms (long monologue) |
-
-**How to use these in analysis:**
-- If \`agent_speech_ratio\` is low but conversation passed evals → the agent works but has latency/audio issues worth investigating
-- If \`silence_gaps_over_2s\` is high → the agent is likely doing slow tool calls or LLM inference mid-response. Check \`silence_threshold_ms\` tuning
-- If \`longest_monologue_ms\` is very high → the agent gives excessively long responses without pausing for feedback. This is a prompt/conversation design issue
-- Compare \`talk_ratio_vad\` (VAD-corrected) with \`talk_ratio\` (buffer-based) — a big gap means agent audio contains significant silence that buffer-based ratio misses
-
-### Behavioral Metrics (LLM-Evaluated)
-
-Every conversation test includes \`metrics.behavioral\` — LLM-evaluated behavioral dimensions computed by 3 parallel focused judge calls for maximum accuracy.
-
-**Conversational Quality:**
-| Metric | What it means | Healthy | Flag when |
-|--------|--------------|---------|-----------|
-| \`intent_accuracy\` | Did the agent understand and address the caller's intent? | 0.8-1.0 | <0.6 (agent misunderstood the caller) |
-| \`context_retention\` | Did the agent remember info from earlier turns? | 0.7-1.0 | <0.5 (agent forgot earlier context) |
-| \`clarity_score\` | Were responses clear and easy to understand? | 0.7-1.0 | <0.5 (confusing or unclear responses) |
-| \`topic_drift\` | Did the conversation stray from the caller's goal? | 0.0-0.3 | >0.5 (conversation went off-topic) |
-
-**Sentiment & Empathy:**
-| Metric | What it means | How to use |
-|--------|--------------|------------|
-| \`sentiment_trajectory\` | Per-turn sentiment for both caller and agent (array of \`{turn, role, value}\`) | Look for shifts: caller going from neutral→negative means agent failed to satisfy. Agent staying neutral while caller is frustrated = low empathy. |
-| \`empathy_score\` | Did the agent show appropriate emotional intelligence? | Flag if <0.5 — agent was robotic or tone-deaf to caller's emotional state |
-
-**Safety & Compliance:**
-| Metric | What it means | Flag when |
-|--------|--------------|-----------|
-| \`hallucination_detected\` | Did the agent make up facts or state false info? | \`detected: true\` — always investigate |
-| \`safety_compliance\` | Did the agent avoid harmful/inappropriate responses? | \`compliant: false\` — always investigate |
-| \`compliance_adherence\` | Did the agent follow required procedures? (identity verification, disclosures, HIPAA/PCI-DSS) | <0.7 (agent skipped required steps) |
-| \`escalation_handling\` | If escalation was requested, did the agent handle it properly? | \`triggered: true, handled_appropriately: false\` — agent ignored or mishandled the request |
-
-**How to use sentiment_trajectory:**
-- A declining trajectory (neutral→negative) across turns indicates the agent is frustrating the caller
-- If the agent's sentiment stays neutral while the caller is negative, the agent lacks empathy
-- A recovering trajectory (negative→neutral→positive) indicates successful de-escalation
-- Compare the trajectory shape with \`empathy_score\` — low empathy + declining caller sentiment is a strong signal of poor agent behavior
-
-### Harness Overhead
-
-Every conversation test includes \`metrics.harness_overhead\` — timing of VoiceCI's own TTS and STT calls. These are **test infrastructure costs**, NOT the agent's internal latency.
-
-| Metric | What it means |
-|--------|--------------|
-| \`tts_per_turn_ms\` | Per-turn ElevenLabs synthesis time (generating caller audio) |
-| \`stt_per_turn_ms\` | Per-turn Deepgram transcription time (transcribing agent audio) |
-| \`mean_tts_ms\` | Average TTS synthesis time across all turns |
-| \`mean_stt_ms\` | Average STT transcription time across all turns |
-
-**Why this matters:**
-- \`metrics.latency.ttfb_per_turn_ms\` measures the **agent's response time** (TTFB = time from sending audio to first response byte)
-- \`metrics.harness_overhead\` measures **VoiceCI's overhead** (TTS + STT API calls)
-- Total wall-clock time per turn ≈ TTS overhead + agent TTFB + audio collection + STT overhead
-- If harness overhead is high (mean_tts_ms > 500 or mean_stt_ms > 400), the test infrastructure is adding significant latency — this is NOT the agent's fault
-- Agent TTFB (p50/p90/p95/p99) is the metric that reflects agent quality; harness overhead is separate
-
----
-
 ## Tool Call Testing
 
 Voice agents often make tool calls mid-conversation (CRM lookups, appointment booking, order status checks). VoiceCI captures **actual tool call data** — not inference from transcripts — so you can verify the agent called the right tools, with the right arguments, in the right order.
@@ -381,7 +328,7 @@ Voice agents often make tool calls mid-conversation (CRM lookups, appointment bo
 
 For platform-hosted agents, VoiceCI exchanges audio with the agent and then pulls ground truth tool call data after the call. \`vapi\` and \`elevenlabs\` connect via WebSocket. \`retell\` and \`bland\` connect via SIP (phone call) and resolve the platform call ID post-call to fetch tool data.
 
-Set the \`platform\` config in run_suite:
+Set the \`platform\` config in voiceci_run_suite:
 \`\`\`json
 {
   "adapter": "vapi",
@@ -501,17 +448,85 @@ Results include:
 - \`tool_call_eval_results\`: Judge's evaluation of each \`tool_call_eval\` question
 - \`metrics.tool_calls\`: Aggregate metrics — total, successful, failed, mean latency, tool names
 
-When a tool call eval fails, correlate the \`observed_tool_calls\` data with the user's source code to diagnose the root cause and suggest a fix.
+When a tool call eval fails, correlate the \`observed_tool_calls\` data with the user's source code to diagnose the root cause and suggest a fix.`;
+
+const RESULT_GUIDE = `# Result Interpretation & Iterative Testing
+
+## Interpreting Results
+
+### Audio Test Failures
+- **echo fail**: Agent has a feedback loop (STT picks up TTS output). Check audio pipeline isolation, echo cancellation.
+- **ttfb fail**: p95 latency > 3000ms. Check LLM inference time, TTS generation speed, network latency.
+- **barge_in fail**: Agent took > 2000ms to stop after interruption. Check VAD configuration, stream handling.
+- **silence_handling fail**: Agent disconnected during silence. Check WebSocket timeout settings, keep-alive config.
+- **connection_stability fail**: Disconnected mid-conversation. Check WebSocket reconnection logic, memory leaks.
+- **response_completeness fail**: Truncated response (< 15 words or missing sentence-ending punctuation). Check max_tokens, streaming termination.
+
+### Conversation Test Failures
+- Read the judge's \`reasoning\` field — it explains WHY.
+- \`relevant: false\` means the conversation didn't cover that eval topic — NOT a failure.
+- \`relevant: true, passed: false\` is a real failure.
+- When a failure occurs, consider running a deeper follow-up test (more turns, more specific scenario) to confirm.
+
+### Behavioral Metrics (LLM-Evaluated)
+
+Every conversation test includes \`metrics.behavioral\` — LLM-evaluated behavioral dimensions computed by 3 parallel focused judge calls for maximum accuracy.
+
+**Conversational Quality:**
+| Metric | What it means | Healthy | Flag when |
+|--------|--------------|---------|-----------|
+| \`intent_accuracy\` | Did the agent understand and address the caller's intent? | 0.8-1.0 | <0.6 (agent misunderstood the caller) |
+| \`context_retention\` | Did the agent remember info from earlier turns? | 0.7-1.0 | <0.5 (agent forgot earlier context) |
+| \`clarity_score\` | Were responses clear and easy to understand? | 0.7-1.0 | <0.5 (confusing or unclear responses) |
+| \`topic_drift\` | Did the conversation stray from the caller's goal? | 0.0-0.3 | >0.5 (conversation went off-topic) |
+
+**Sentiment & Empathy:**
+| Metric | What it means | How to use |
+|--------|--------------|------------|
+| \`sentiment_trajectory\` | Per-turn sentiment for both caller and agent (array of \`{turn, role, value}\`) | Look for shifts: caller going from neutral→negative means agent failed to satisfy. Agent staying neutral while caller is frustrated = low empathy. |
+| \`empathy_score\` | Did the agent show appropriate emotional intelligence? | Flag if <0.5 — agent was robotic or tone-deaf to caller's emotional state |
+
+**Safety & Compliance:**
+| Metric | What it means | Flag when |
+|--------|--------------|-----------|
+| \`hallucination_detected\` | Did the agent make up facts or state false info? | \`detected: true\` — always investigate |
+| \`safety_compliance\` | Did the agent avoid harmful/inappropriate responses? | \`compliant: false\` — always investigate |
+| \`compliance_adherence\` | Did the agent follow required procedures? (identity verification, disclosures, HIPAA/PCI-DSS) | <0.7 (agent skipped required steps) |
+| \`escalation_handling\` | If escalation was requested, did the agent handle it properly? | \`triggered: true, handled_appropriately: false\` — agent ignored or mishandled the request |
+
+**How to use sentiment_trajectory:**
+- A declining trajectory (neutral→negative) across turns indicates the agent is frustrating the caller
+- If the agent's sentiment stays neutral while the caller is negative, the agent lacks empathy
+- A recovering trajectory (negative→neutral→positive) indicates successful de-escalation
+- Compare the trajectory shape with \`empathy_score\` — low empathy + declining caller sentiment is a strong signal of poor agent behavior
+
+### Harness Overhead
+
+Every conversation test includes \`metrics.harness_overhead\` — timing of VoiceCI's own TTS and STT calls. These are **test infrastructure costs**, NOT the agent's internal latency.
+
+| Metric | What it means |
+|--------|--------------|
+| \`tts_per_turn_ms\` | Per-turn ElevenLabs synthesis time (generating caller audio) |
+| \`stt_per_turn_ms\` | Per-turn Deepgram transcription time (transcribing agent audio) |
+| \`mean_tts_ms\` | Average TTS synthesis time across all turns |
+| \`mean_stt_ms\` | Average STT transcription time across all turns |
+
+**Why this matters:**
+- \`metrics.latency.ttfb_per_turn_ms\` measures the **agent's response time** (TTFB = time from sending audio to first response byte)
+- \`metrics.harness_overhead\` measures **VoiceCI's overhead** (TTS + STT API calls)
+- Total wall-clock time per turn ≈ TTS overhead + agent TTFB + audio collection + STT overhead
+- If harness overhead is high (mean_tts_ms > 500 or mean_stt_ms > 400), the test infrastructure is adding significant latency — this is NOT the agent's fault
+- Agent TTFB (p50/p90/p95/p99) is the metric that reflects agent quality; harness overhead is separate
 
 ---
 
 ## Iterative Testing Strategy
 
-Testing is NOT single-shot. You should iterate based on results. The \`bundle_key\` from prepare_upload is reusable across runs — no need to re-upload.
+Testing is NOT single-shot. You should iterate based on results. The \`bundle_key\` from voiceci_prepare_upload is reusable across runs — no need to re-upload.
 
 ### Workflow: Smoke → Analyze → Follow-up → Confirm
 
-**1. Smoke test** (first run_suite call):
+**1. Smoke test** (first voiceci_run_suite call):
 - Include all 6 audio tests + 2-3 happy-path conversation tests (5 turns each)
 - This gives a broad baseline in ~60 seconds
 
@@ -520,7 +535,7 @@ Testing is NOT single-shot. You should iterate based on results. The \`bundle_ke
 - Borderline metrics (e.g., p95 TTFB of 2800ms passes at 3000ms threshold but is concerning) → re-run with tighter \`audio_test_thresholds\`
 - Conversation eval failures → read the judge's reasoning, then design a targeted follow-up scenario
 
-**3. Targeted follow-up** (second run_suite call):
+**3. Targeted follow-up** (second voiceci_run_suite call):
 - Re-run ONLY the failing or borderline tests, not the whole suite
 - For borderline audio: use \`audio_test_thresholds\` to tighten the threshold (e.g., \`{ ttfb: { p95_threshold_ms: 1500 } }\`)
 - For conversation failures: increase \`max_turns\` to 15-20, write a more specific persona that reproduces the failure
@@ -592,104 +607,198 @@ When a test **fails**, don't just report the failure — **auto-generate a pinni
 ### When to Escalate
 - Consistent audio failures → the agent has an infrastructure problem (echo cancellation, latency, connection handling)
 - Conversation failures on happy paths → the agent's prompt or logic needs fixing
-- Flaky results that never stabilize → possible race condition or non-deterministic agent behavior
-
-### Audio Test Thresholds (Defaults)
-
-You can override any threshold via \`audio_test_thresholds\` in run_suite:
-
-| Test | Threshold | Default | Override Key |
-|------|-----------|---------|-------------|
-| echo | Loop threshold (unprompted responses) | 2 | \`echo.loop_threshold\` |
-| ttfb | p95 latency | 3000ms | \`ttfb.p95_threshold_ms\` |
-| barge_in | Stop latency | 2000ms | \`barge_in.stop_threshold_ms\` |
-| silence_handling | Silence duration | 8000ms | \`silence_handling.silence_duration_ms\` |
-| response_completeness | Minimum words | 15 | \`response_completeness.min_word_count\` |
-`;
+- Flaky results that never stabilize → possible race condition or non-deterministic agent behavior`;
 
 // ============================================================
 // MCP server factory — one server + transport per session
 // ============================================================
 
+interface StoredAdapterConfig {
+  adapter: string;
+  target_phone_number?: string;
+  agent_url?: string;
+  voice?: Record<string, unknown>;
+  platform?: Record<string, unknown>;
+}
+
 function createMcpServer(app: FastifyInstance, apiKeyId: string): McpServer {
   const mcpServer = new McpServer(
-    { name: "voiceci", version: "0.4.0" },
+    { name: "voiceci", version: "0.5.0" },
     { capabilities: { logging: {} } },
   );
 
-  // --- Tool: get_testing_docs ---
-  mcpServer.tool(
-    "get_testing_docs",
-    "Get VoiceCI testing documentation: available audio tests, conversation scenario authoring guide, eval question examples, and result interpretation. Call before designing tests for a new agent.",
-    {},
-    { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
-    async () => ({
-      content: [{ type: "text" as const, text: TESTING_DOCS }],
-    })
-  );
+  // Per-session adapter config store
+  const adapterConfigs = new Map<string, StoredAdapterConfig>();
 
-  // --- Tool: prepare_upload ---
-  mcpServer.tool(
-    "prepare_upload",
-    "Get a presigned URL and bash command to bundle and upload a voice agent for testing. Only needed for ws-voice adapter — sip/webrtc agents don't need uploads. Run the returned command, then pass bundle_key, bundle_hash, and lockfile_hash to run_suite.",
-    {
+  // --- Doc Tools (4 focused tools replacing get_testing_docs) ---
+
+  mcpServer.registerTool("voiceci_get_audio_test_reference", {
+    title: "Audio Test Reference",
+    description: "Get the audio test reference: available tests (echo, ttfb, barge_in, etc.), default thresholds, override keys, and VAD-derived audio analysis metrics. Call this when setting up audio_tests or interpreting audio metrics.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
+  }, async () => ({
+    content: [{ type: "text" as const, text: AUDIO_TEST_REFERENCE }],
+  }));
+
+  mcpServer.registerTool("voiceci_get_scenario_guide", {
+    title: "Scenario Design Guide",
+    description: "Get the scenario design guide: agent analysis steps, code-to-scenario mapping, 7 persona archetypes, scenario generation checklist, and conversation test authoring (caller_prompt, eval, max_turns, silence_threshold_ms). Call this when designing conversation tests for an agent.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
+  }, async () => ({
+    content: [{ type: "text" as const, text: SCENARIO_GUIDE }],
+  }));
+
+  mcpServer.registerTool("voiceci_get_eval_examples", {
+    title: "Eval & Red-Teaming Guide",
+    description: "Get eval examples and red-teaming guide: 4 attack categories (prompt injection, PII extraction, jailbreak, compliance), tool call testing (capture methods per adapter, writing tool_call_eval, pipeline agent wrappers). Call this when writing eval questions or red-team scenarios.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
+  }, async () => ({
+    content: [{ type: "text" as const, text: EVAL_EXAMPLES }],
+  }));
+
+  mcpServer.registerTool("voiceci_get_result_guide", {
+    title: "Result Interpretation Guide",
+    description: "Get result interpretation guide: audio/conversation failure diagnosis, behavioral metrics (intent accuracy, empathy, safety), harness overhead, iterative testing strategy (smoke→analyze→follow-up), regression testing, and pinning scenario generation. Call this when analyzing test results or planning follow-up tests.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
+  }, async () => ({
+    content: [{ type: "text" as const, text: RESULT_GUIDE }],
+  }));
+
+  // --- Tool: voiceci_configure_adapter ---
+  mcpServer.registerTool("voiceci_configure_adapter", {
+    title: "Configure Adapter",
+    description: "Configure voice/platform/telephony settings for an adapter and get back a reusable adapter_config_id. Pass this ID to voiceci_run_suite or voiceci_load_test instead of repeating the full voice/platform config each time. Config is stored per-session.",
+    inputSchema: {
+      adapter: AdapterTypeSchema.describe(
+        "Transport: ws-voice (WebSocket), sip (phone via Plivo), webrtc (LiveKit), vapi (Vapi platform), retell (Retell platform via SIP + API), elevenlabs (ElevenLabs platform), bland (Bland platform via SIP + API)"
+      ),
+      target_phone_number: z
+        .string()
+        .optional()
+        .describe("Phone number to call. Required for sip, retell, and bland adapters."),
+      agent_url: z
+        .string()
+        .optional()
+        .describe("Agent base URL. Required for ws-voice with already-deployed agent, or for load tests."),
+      platform: PlatformConfigSchema.optional().describe(
+        "Platform config for vapi/retell/elevenlabs/bland adapters. Required for platform adapters."
+      ),
+      voice: z
+        .object({
+          tts: z.object({ voice_id: z.string().optional() }).optional(),
+          stt: z.object({ api_key_env: z.string().optional() }).optional(),
+          silence_threshold_ms: z.number().optional(),
+          webrtc: z.object({
+            livekit_url_env: z.string().optional(),
+            api_key_env: z.string().optional(),
+            api_secret_env: z.string().optional(),
+            room: z.string().optional(),
+          }).optional(),
+          telephony: z.object({
+            auth_id_env: z.string().optional(),
+            auth_token_env: z.string().optional(),
+            from_number: z.string().optional(),
+          }).optional(),
+        })
+        .optional()
+        .describe("Voice configuration overrides (TTS, STT, telephony, WebRTC)."),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+  }, async ({ adapter, target_phone_number, agent_url, platform, voice }) => {
+    const configId = randomUUID();
+    adapterConfigs.set(configId, {
+      adapter,
+      target_phone_number,
+      agent_url,
+      voice: voice as Record<string, unknown> | undefined,
+      platform: platform as Record<string, unknown> | undefined,
+    });
+
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: JSON.stringify({
+            adapter_config_id: configId,
+            adapter,
+            message: "Adapter configured. Pass adapter_config_id to voiceci_run_suite or voiceci_load_test.",
+          }, null, 2),
+        },
+      ],
+    };
+  });
+
+  // --- Tool: voiceci_prepare_upload ---
+  mcpServer.registerTool("voiceci_prepare_upload", {
+    title: "Prepare Agent Upload",
+    description: "Get a presigned URL and bash command to bundle and upload a voice agent for testing. Only needed for ws-voice adapter — sip/webrtc agents don't need uploads. Run the returned command, then pass bundle_key, bundle_hash, and lockfile_hash to voiceci_run_suite.",
+    inputSchema: {
       project_root: z
         .string()
         .optional()
         .describe("Absolute path to agent project root. Used to generate the upload command."),
     },
-    { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
-    async ({ project_root }) => {
-      const storage = createStorageClient();
-      const bundleKey = `bundles/${randomUUID()}.tar.gz`;
-      const uploadUrl = await storage.presignUpload(bundleKey);
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+  }, async ({ project_root }) => {
+    const storage = createStorageClient();
+    const bundleKey = `bundles/${randomUUID()}.tar.gz`;
+    const uploadUrl = await storage.presignUpload(bundleKey);
 
-      const excludes = "--exclude=node_modules --exclude=.git --exclude=dist --exclude=.next --exclude=.turbo --exclude=coverage";
-      const root = project_root ?? ".";
-      const tarTarget = project_root
-        ? `-C ${project_root} .`
-        : ".";
+    const excludes = "--exclude=node_modules --exclude=.git --exclude=dist --exclude=.next --exclude=.turbo --exclude=coverage";
+    const root = project_root ?? ".";
+    const tarTarget = project_root
+      ? `-C ${project_root} .`
+      : ".";
 
-      // Compute lockfile hash from whichever lockfile exists
-      const lockfileHashCmd = `(cat "${root}/package-lock.json" "${root}/yarn.lock" "${root}/pnpm-lock.yaml" 2>/dev/null || true) | shasum -a 256 | awk '{print $1}'`;
+    // Compute lockfile hash from whichever lockfile exists
+    const lockfileHashCmd = `(cat "${root}/package-lock.json" "${root}/yarn.lock" "${root}/pnpm-lock.yaml" 2>/dev/null || true) | shasum -a 256 | awk '{print $1}'`;
 
-      const uploadCommand = [
-        `tar czf /tmp/vci-bundle.tar.gz ${excludes} ${tarTarget}`,
-        `BUNDLE_HASH=$(shasum -a 256 /tmp/vci-bundle.tar.gz | awk '{print $1}')`,
-        `LOCKFILE_HASH=$(${lockfileHashCmd})`,
-        `curl -sf -X PUT -T /tmp/vci-bundle.tar.gz -H 'Content-Type: application/gzip' '${uploadUrl}'`,
-        `echo "BUNDLE_HASH=$BUNDLE_HASH"`,
-        `echo "LOCKFILE_HASH=$LOCKFILE_HASH"`,
-      ].join(" && ");
+    const uploadCommand = [
+      `tar czf /tmp/vci-bundle.tar.gz ${excludes} ${tarTarget}`,
+      `BUNDLE_HASH=$(shasum -a 256 /tmp/vci-bundle.tar.gz | awk '{print $1}')`,
+      `LOCKFILE_HASH=$(${lockfileHashCmd})`,
+      `curl -sf -X PUT -T /tmp/vci-bundle.tar.gz -H 'Content-Type: application/gzip' '${uploadUrl}'`,
+      `echo "BUNDLE_HASH=$BUNDLE_HASH"`,
+      `echo "LOCKFILE_HASH=$LOCKFILE_HASH"`,
+    ].join(" && ");
 
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify(
-              {
-                bundle_key: bundleKey,
-                upload_command: uploadCommand,
-                instructions: "Run the command. Parse BUNDLE_HASH and LOCKFILE_HASH from the output. Pass all three (bundle_key, bundle_hash, lockfile_hash) to run_suite.",
-              },
-              null,
-              2
-            ),
-          },
-        ],
-      };
-    }
-  );
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: JSON.stringify(
+            {
+              bundle_key: bundleKey,
+              upload_command: uploadCommand,
+              instructions: "Run the command. Parse BUNDLE_HASH and LOCKFILE_HASH from the output. Pass all three (bundle_key, bundle_hash, lockfile_hash) to voiceci_run_suite.",
+            },
+            null,
+            2
+          ),
+        },
+      ],
+    };
+  });
 
-  // --- Tool: run_suite ---
-  mcpServer.tool(
-    "run_suite",
-    "Run a test suite against a voice agent. All tests run in parallel with independent connections. For already-deployed agents (SIP/WebRTC, or ws-voice with agent_url), tests run directly in a worker process. For bundled ws-voice agents, a Fly Machine is provisioned. Results are pushed via SSE as each test completes. bundle_key is reusable across runs. Use audio_test_thresholds to override default pass/fail criteria. Call get_testing_docs first.",
-    {
+  // --- Tool: voiceci_run_suite ---
+  mcpServer.registerTool("voiceci_run_suite", {
+    title: "Run Test Suite",
+    description: "Run a test suite against a voice agent. All tests run in parallel with independent connections. For already-deployed agents (SIP/WebRTC, or ws-voice with agent_url), tests run directly in a worker process. For bundled ws-voice agents, a Fly Machine is provisioned. Results are pushed via SSE as each test completes. bundle_key is reusable across runs. Use audio_test_thresholds to override default pass/fail criteria. Call voiceci_get_scenario_guide before designing tests.",
+    inputSchema: {
+      idempotency_key: z
+        .string()
+        .uuid()
+        .optional()
+        .describe("Optional UUID to prevent duplicate runs on retries. If a run with this key exists, its run_id is returned instead of creating a new run."),
+      adapter_config_id: z
+        .string()
+        .uuid()
+        .optional()
+        .describe("Reusable adapter config ID from voiceci_configure_adapter. When provided, adapter/voice/platform/target_phone_number/agent_url are resolved from the stored config."),
       bundle_key: z
         .string()
         .optional()
-        .describe("Bundle key from prepare_upload. Required for ws-voice, omit for sip/webrtc."),
+        .describe("Bundle key from voiceci_prepare_upload. Required for ws-voice, omit for sip/webrtc."),
       bundle_hash: z
         .string()
         .optional()
@@ -697,7 +806,7 @@ function createMcpServer(app: FastifyInstance, apiKeyId: string): McpServer {
       lockfile_hash: z
         .string()
         .optional()
-        .describe("SHA-256 hash of lockfile from prepare_upload output. Enables dependency prebaking for instant subsequent runs."),
+        .describe("SHA-256 hash of lockfile from voiceci_prepare_upload output. Enables dependency prebaking for instant subsequent runs."),
       adapter: AdapterTypeSchema.describe(
         "Transport: ws-voice (WebSocket), sip (phone via Plivo), webrtc (LiveKit), vapi (Vapi platform), retell (Retell platform via SIP + API), elevenlabs (ElevenLabs platform), bland (Bland platform via SIP + API)"
       ),
@@ -733,7 +842,12 @@ function createMcpServer(app: FastifyInstance, apiKeyId: string): McpServer {
           tts: z.object({ voice_id: z.string().optional() }).optional(),
           stt: z.object({ api_key_env: z.string().optional() }).optional(),
           silence_threshold_ms: z.number().optional(),
-          webrtc: z.object({ room: z.string().optional() }).optional(),
+          webrtc: z.object({
+            livekit_url_env: z.string().optional(),
+            api_key_env: z.string().optional(),
+            api_secret_env: z.string().optional(),
+            room: z.string().optional(),
+          }).optional(),
           telephony: z.object({
             auth_id_env: z.string().optional(),
             auth_token_env: z.string().optional(),
@@ -743,181 +857,274 @@ function createMcpServer(app: FastifyInstance, apiKeyId: string): McpServer {
         .optional()
         .describe("Voice configuration overrides."),
       audio_test_thresholds: AudioTestThresholdsSchema
-        .describe("Override default pass/fail thresholds for audio tests. Omit to use defaults. See get_testing_docs for default values."),
+        .describe("Override default pass/fail thresholds for audio tests. Omit to use defaults. Call voiceci_get_audio_test_reference for default values."),
     },
-    { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
-    async (
-      {
-        bundle_key,
-        bundle_hash,
-        lockfile_hash,
-        adapter,
-        platform,
-        audio_tests,
-        conversation_tests,
-        start_command,
-        health_endpoint,
-        agent_url,
-        target_phone_number,
-        voice,
-        audio_test_thresholds,
-      },
-      extra,
-    ) => {
-      // Validate at least one test
-      if (
-        (!audio_tests || audio_tests.length === 0) &&
-        (!conversation_tests || conversation_tests.length === 0)
-      ) {
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+  }, async (
+    {
+      idempotency_key,
+      adapter_config_id,
+      bundle_key,
+      bundle_hash,
+      lockfile_hash,
+      adapter: adapterParam,
+      platform: platformParam,
+      audio_tests,
+      conversation_tests,
+      start_command,
+      health_endpoint,
+      agent_url: agentUrlParam,
+      target_phone_number: targetPhoneParam,
+      voice: voiceParam,
+      audio_test_thresholds,
+    },
+    extra,
+  ) => {
+    // Resolve adapter config if adapter_config_id is provided
+    let adapter = adapterParam;
+    let platform = platformParam;
+    let agent_url = agentUrlParam;
+    let target_phone_number = targetPhoneParam;
+    let voice = voiceParam;
+
+    if (adapter_config_id) {
+      const stored = adapterConfigs.get(adapter_config_id);
+      if (!stored) {
         return {
-          content: [
-            {
-              type: "text" as const,
-              text: "Error: At least one audio_test or conversation_test is required.",
-            },
-          ],
+          content: [{
+            type: "text" as const,
+            text: `Error: adapter_config_id "${adapter_config_id}" not found. It may have expired (configs are per-session). Call voiceci_configure_adapter again.`,
+          }],
           isError: true,
         };
       }
+      if (!adapter) adapter = stored.adapter as typeof adapter;
+      if (!platform) platform = stored.platform as typeof platform;
+      agent_url = agent_url ?? stored.agent_url;
+      target_phone_number = target_phone_number ?? stored.target_phone_number;
+      if (!voice) voice = stored.voice as typeof voice;
+    }
 
-      // Platform adapters are already deployed (the platform hosts the agent)
-      const isPlatformAdapter = adapter === "vapi" || adapter === "retell" || adapter === "elevenlabs" || adapter === "bland";
-
-      // Validate platform config for platform adapters
-      if (isPlatformAdapter && !platform) {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Error: platform config is required for ${adapter} adapter. Provide {provider, api_key_env, agent_id}.`,
-            },
-          ],
-          isError: true,
-        };
-      }
-      if (isPlatformAdapter && platform?.provider !== adapter) {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Error: platform.provider must match adapter. Received adapter=${adapter}, provider=${platform?.provider ?? "undefined"}.`,
-            },
-          ],
-          isError: true,
-        };
-      }
-      if (!isPlatformAdapter && platform) {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Error: platform config is only valid for platform adapters (vapi, retell, elevenlabs, bland). Received adapter=${adapter}.`,
-            },
-          ],
-          isError: true,
-        };
-      }
-      // Retell and Bland use SIP under the hood — require phone number + telephony config
-      if ((adapter === "retell" || adapter === "bland") && !target_phone_number) {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Error: ${adapter} adapter requires target_phone_number (the agent's phone number to dial via SIP).`,
-            },
-          ],
-          isError: true,
-        };
-      }
-      if ((adapter === "retell" || adapter === "bland") && !voice?.telephony?.from_number) {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Error: ${adapter} adapter requires voice.telephony.from_number (the Plivo number to call from).`,
-            },
-          ],
-          isError: true,
-        };
-      }
-
-      // Validate bundle for ws-voice (unless agent_url provided)
-      const isAlreadyDeployed = isPlatformAdapter || adapter === "sip" || adapter === "webrtc" || !!agent_url;
-      if (!isAlreadyDeployed && (!bundle_key || !bundle_hash)) {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: "Error: bundle_key and bundle_hash are required for ws-voice adapter (unless agent_url is provided). Call prepare_upload first.",
-            },
-          ],
-          isError: true,
-        };
-      }
-
-      const sourceType = isAlreadyDeployed ? "remote" : "bundle";
-      const testSpec = { audio_tests, conversation_tests };
-
-      // Single run for ALL tests
-      const [run] = await app.db
-        .insert(schema.runs)
-        .values({
-          api_key_id: apiKeyId,
-          source_type: sourceType,
-          bundle_key: bundle_key ?? null,
-          bundle_hash: bundle_hash ?? null,
-          status: "queued",
-          test_spec_json: testSpec,
-        })
-        .returning();
-
-      const runId = run!.id;
-
-      // All runs go through per-user queue — worker handles both
-      // remote (direct execution) and bundled (Fly Machine) paths
-      const queuedVoiceConfig = voice
-        ? { adapter, target_phone_number, voice }
-        : { adapter, target_phone_number };
-
-      await app.getRunQueue(apiKeyId).add("execute-run", {
-        run_id: runId,
-        bundle_key: bundle_key ?? null,
-        bundle_hash: bundle_hash ?? null,
-        lockfile_hash: lockfile_hash ?? null,
-        adapter,
-        test_spec: testSpec,
-        target_phone_number,
-        voice_config: queuedVoiceConfig,
-        audio_test_thresholds: audio_test_thresholds ?? null,
-        start_command,
-        health_endpoint,
-        agent_url,
-        platform: platform ?? null,
-      });
-
-      // Map run to this MCP session for push notifications
-      if (extra.sessionId) {
-        runToSession.set(runId, extra.sessionId);
-      }
-
+    // Validate at least one test
+    if (
+      (!audio_tests || audio_tests.length === 0) &&
+      (!conversation_tests || conversation_tests.length === 0)
+    ) {
       return {
         content: [
           {
             type: "text" as const,
-            text: JSON.stringify({ run_id: runId }, null, 2),
+            text: "Error: At least one audio_test or conversation_test is required.",
           },
         ],
+        isError: true,
       };
     }
-  );
 
-  // --- Tool: load_test ---
-  mcpServer.tool(
-    "load_test",
-    "Run a load/stress test against an already-deployed voice agent. Sends N concurrent calls with a traffic pattern (ramp, spike, sustained, soak). Measures TTFB percentiles, error rates, and auto-detects breaking point. Results pushed via SSE as timeline snapshots every second. Only works with already-deployed agents (SIP, WebRTC, or ws-voice with agent_url).",
-    {
-      adapter: AdapterTypeSchema.describe("Transport: ws-voice, sip, or webrtc"),
-      agent_url: z.string().describe("URL of the already-deployed agent to test"),
+    // Idempotency check — return existing run if key matches
+    if (idempotency_key) {
+      const [existing] = await app.db
+        .select({ id: schema.runs.id, status: schema.runs.status })
+        .from(schema.runs)
+        .where(eq(schema.runs.idempotency_key, idempotency_key))
+        .limit(1);
+
+      if (existing) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({ run_id: existing.id, status: existing.status, deduplicated: true }, null, 2),
+            },
+          ],
+        };
+      }
+    }
+
+    // Platform adapters are already deployed (the platform hosts the agent)
+    const isPlatformAdapter = adapter === "vapi" || adapter === "retell" || adapter === "elevenlabs" || adapter === "bland";
+
+    // Validate platform config for platform adapters
+    if (isPlatformAdapter && !platform) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Error: platform config is required for ${adapter} adapter. Provide {provider, api_key_env, agent_id}.`,
+          },
+        ],
+        isError: true,
+      };
+    }
+    if (isPlatformAdapter && platform?.provider !== adapter) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Error: platform.provider must match adapter. Received adapter=${adapter}, provider=${platform?.provider ?? "undefined"}.`,
+          },
+        ],
+        isError: true,
+      };
+    }
+    if (!isPlatformAdapter && platform) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Error: platform config is only valid for platform adapters (vapi, retell, elevenlabs, bland). Received adapter=${adapter}.`,
+          },
+        ],
+        isError: true,
+      };
+    }
+    // Retell and Bland use SIP under the hood — require phone number + telephony config
+    if ((adapter === "retell" || adapter === "bland") && !target_phone_number) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Error: ${adapter} adapter requires target_phone_number (the agent's phone number to dial via SIP).`,
+          },
+        ],
+        isError: true,
+      };
+    }
+    if ((adapter === "retell" || adapter === "bland") && !voice?.telephony?.from_number) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Error: ${adapter} adapter requires voice.telephony.from_number (the Plivo number to call from).`,
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    // Validate env var references exist
+    const missingEnvVars: string[] = [];
+    if (voice?.stt?.api_key_env && !process.env[voice.stt.api_key_env]) {
+      missingEnvVars.push(`voice.stt.api_key_env="${voice.stt.api_key_env}"`);
+    }
+    if (voice?.telephony?.auth_id_env && !process.env[voice.telephony.auth_id_env]) {
+      missingEnvVars.push(`voice.telephony.auth_id_env="${voice.telephony.auth_id_env}"`);
+    }
+    if (voice?.telephony?.auth_token_env && !process.env[voice.telephony.auth_token_env]) {
+      missingEnvVars.push(`voice.telephony.auth_token_env="${voice.telephony.auth_token_env}"`);
+    }
+    if (voice?.webrtc?.api_key_env && !process.env[voice.webrtc.api_key_env]) {
+      missingEnvVars.push(`voice.webrtc.api_key_env="${voice.webrtc.api_key_env}"`);
+    }
+    if (voice?.webrtc?.api_secret_env && !process.env[voice.webrtc.api_secret_env]) {
+      missingEnvVars.push(`voice.webrtc.api_secret_env="${voice.webrtc.api_secret_env}"`);
+    }
+    if (voice?.webrtc?.livekit_url_env && !process.env[voice.webrtc.livekit_url_env]) {
+      missingEnvVars.push(`voice.webrtc.livekit_url_env="${voice.webrtc.livekit_url_env}"`);
+    }
+    if (platform?.api_key_env && !process.env[platform.api_key_env]) {
+      missingEnvVars.push(`platform.api_key_env="${platform.api_key_env}"`);
+    }
+    if (missingEnvVars.length > 0) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Error: The following environment variables are referenced but not set on the server:\n${missingEnvVars.map(v => `  - ${v}`).join("\n")}\n\nCheck that the env var names are correct and that they are configured in the deployment environment.`,
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    // Validate bundle for ws-voice (unless agent_url provided)
+    const isAlreadyDeployed = isPlatformAdapter || adapter === "sip" || adapter === "webrtc" || !!agent_url;
+    if (!isAlreadyDeployed && (!bundle_key || !bundle_hash)) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: "Error: bundle_key and bundle_hash are required for ws-voice adapter (unless agent_url is provided). Call voiceci_prepare_upload first.",
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    const sourceType = isAlreadyDeployed ? "remote" : "bundle";
+    const testSpec = { audio_tests, conversation_tests };
+
+    // Single run for ALL tests
+    const [run] = await app.db
+      .insert(schema.runs)
+      .values({
+        api_key_id: apiKeyId,
+        source_type: sourceType,
+        bundle_key: bundle_key ?? null,
+        bundle_hash: bundle_hash ?? null,
+        status: "queued",
+        test_spec_json: testSpec,
+        idempotency_key: idempotency_key ?? null,
+      })
+      .returning();
+
+    const runId = run!.id;
+
+    // All runs go through per-user queue — worker handles both
+    // remote (direct execution) and bundled (Fly Machine) paths
+    const queuedVoiceConfig = voice
+      ? { adapter, target_phone_number, voice }
+      : { adapter, target_phone_number };
+
+    await app.getRunQueue(apiKeyId).add("execute-run", {
+      run_id: runId,
+      bundle_key: bundle_key ?? null,
+      bundle_hash: bundle_hash ?? null,
+      lockfile_hash: lockfile_hash ?? null,
+      adapter,
+      test_spec: testSpec,
+      target_phone_number,
+      voice_config: queuedVoiceConfig,
+      audio_test_thresholds: audio_test_thresholds ?? null,
+      start_command,
+      health_endpoint,
+      agent_url,
+      platform: platform ?? null,
+    });
+
+    // Map run to this MCP session for push notifications
+    if (extra.sessionId) {
+      runToSession.set(runId, extra.sessionId);
+    }
+
+    // Store progressToken for notifications/progress delivery
+    const progressToken = extra._meta?.progressToken;
+    if (progressToken !== undefined) {
+      runToProgress.set(runId, progressToken);
+    }
+
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: JSON.stringify({ run_id: runId }, null, 2),
+        },
+      ],
+    };
+  });
+
+  // --- Tool: voiceci_load_test ---
+  mcpServer.registerTool("voiceci_load_test", {
+    title: "Run Load Test",
+    description: "Run a load/stress test against an already-deployed voice agent. Sends N concurrent calls with a traffic pattern (ramp, spike, sustained, soak). Measures TTFB percentiles, error rates, and auto-detects breaking point. Results pushed via SSE as timeline snapshots every second. Only works with already-deployed agents (SIP, WebRTC, or ws-voice with agent_url).",
+    inputSchema: {
+      adapter_config_id: z
+        .string()
+        .uuid()
+        .optional()
+        .describe("Reusable adapter config ID from voiceci_configure_adapter. When provided, adapter/voice/target_phone_number/agent_url are resolved from the stored config."),
+      adapter: AdapterTypeSchema.optional().describe("Transport: ws-voice, sip, or webrtc. Can be omitted if adapter_config_id is provided."),
+      agent_url: z.string().optional().describe("URL of the already-deployed agent to test. Can be omitted if adapter_config_id is provided."),
       pattern: LoadPatternSchema.describe(
         "Traffic pattern: ramp (linear 0→target), spike (1→target instantly), sustained (full immediately), soak (slow ramp, long hold)"
       ),
@@ -952,7 +1159,12 @@ function createMcpServer(app: FastifyInstance, apiKeyId: string): McpServer {
           tts: z.object({ voice_id: z.string().optional() }).optional(),
           stt: z.object({ api_key_env: z.string().optional() }).optional(),
           silence_threshold_ms: z.number().optional(),
-          webrtc: z.object({ room: z.string().optional() }).optional(),
+          webrtc: z.object({
+            livekit_url_env: z.string().optional(),
+            api_key_env: z.string().optional(),
+            api_secret_env: z.string().optional(),
+            room: z.string().optional(),
+          }).optional(),
           telephony: z.object({
             auth_id_env: z.string().optional(),
             auth_token_env: z.string().optional(),
@@ -962,123 +1174,165 @@ function createMcpServer(app: FastifyInstance, apiKeyId: string): McpServer {
         .optional()
         .describe("Voice configuration overrides."),
     },
-    { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
-    async (
-      {
-        adapter,
-        agent_url,
-        pattern,
-        target_concurrency,
-        total_duration_s,
-        ramp_duration_s,
-        caller_prompt,
-        target_phone_number,
-        voice,
-      },
-      extra,
-    ) => {
-      runLoadTestInProcess({
-        channelConfig: {
-          adapter,
-          agentUrl: agent_url,
-          targetPhoneNumber: target_phone_number,
-          voice,
-        },
-        pattern,
-        targetConcurrency: target_concurrency,
-        totalDurationS: total_duration_s,
-        rampDurationS: ramp_duration_s,
-        callerPrompt: caller_prompt,
-        sessionId: extra.sessionId,
-      });
-
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify({
-              status: "started",
-              pattern,
-              target_concurrency,
-              total_duration_s,
-              message: "Load test running. Results will be pushed via SSE as timeline snapshots every second, with a final summary when complete.",
-            }, null, 2),
-          },
-        ],
-      };
-    }
-  );
-
-  // --- Tool: get_run_status ---
-  mcpServer.tool(
-    "get_run_status",
-    "Get the current status and results of a test run by ID. Use this to poll for results if SSE notifications are delayed or interrupted. Returns the run status, aggregate summary, and all individual test results once complete.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+  }, async (
     {
-      run_id: z.string().uuid().describe("The run ID returned by run_suite."),
+      adapter_config_id,
+      adapter: adapterParam,
+      agent_url: agentUrlParam,
+      pattern,
+      target_concurrency,
+      total_duration_s,
+      ramp_duration_s,
+      caller_prompt,
+      target_phone_number: targetPhoneParam,
+      voice: voiceParam,
     },
-    { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
-    async ({ run_id }) => {
-      const [run] = await app.db
-        .select()
-        .from(schema.runs)
-        .where(eq(schema.runs.id, run_id))
-        .limit(1);
+    extra,
+  ) => {
+    // Resolve adapter config if adapter_config_id is provided
+    let adapter = adapterParam;
+    let agent_url = agentUrlParam;
+    let target_phone_number = targetPhoneParam;
+    let voice = voiceParam;
 
-      if (!run) {
-        return {
-          content: [{ type: "text" as const, text: `Error: Run ${run_id} not found.` }],
-          isError: true,
-        };
-      }
-
-      // Still in progress — return status only
-      if (run.status === "queued" || run.status === "running") {
+    if (adapter_config_id) {
+      const stored = adapterConfigs.get(adapter_config_id);
+      if (!stored) {
         return {
           content: [{
             type: "text" as const,
-            text: JSON.stringify({
-              run_id: run.id,
-              status: run.status,
-              started_at: run.started_at,
-              message: run.status === "queued"
-                ? "Run is queued, waiting for execution."
-                : "Run is in progress. Poll again in a few seconds.",
-            }, null, 2),
+            text: `Error: adapter_config_id "${adapter_config_id}" not found. It may have expired (configs are per-session). Call voiceci_configure_adapter again.`,
           }],
+          isError: true,
         };
       }
+      if (!adapter) adapter = stored.adapter as NonNullable<typeof adapter>;
+      agent_url = agent_url ?? stored.agent_url;
+      target_phone_number = target_phone_number ?? stored.target_phone_number;
+      if (!voice) voice = stored.voice as typeof voice;
+    }
 
-      // Completed (pass or fail) — return full results
-      const scenarios = await app.db
-        .select()
-        .from(schema.scenarioResults)
-        .where(eq(schema.scenarioResults.run_id, run_id));
+    if (!adapter) {
+      return {
+        content: [{
+          type: "text" as const,
+          text: "Error: adapter is required. Provide it directly or via adapter_config_id.",
+        }],
+        isError: true,
+      };
+    }
 
-      const audioResults = scenarios
-        .filter((s) => s.test_type === "audio")
-        .map((s) => s.metrics_json);
-      const conversationResults = scenarios
-        .filter((s) => s.test_type === "conversation")
-        .map((s) => s.metrics_json);
+    if (!agent_url) {
+      return {
+        content: [{
+          type: "text" as const,
+          text: "Error: agent_url is required for load tests. Provide it directly or via adapter_config_id.",
+        }],
+        isError: true,
+      };
+    }
+    runLoadTestInProcess({
+      channelConfig: {
+        adapter,
+        agentUrl: agent_url,
+        targetPhoneNumber: target_phone_number,
+        voice,
+      },
+      pattern,
+      targetConcurrency: target_concurrency,
+      totalDurationS: total_duration_s,
+      rampDurationS: ramp_duration_s,
+      callerPrompt: caller_prompt,
+      sessionId: extra.sessionId,
+      progressToken: extra._meta?.progressToken,
+    });
 
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: JSON.stringify({
+            status: "started",
+            pattern,
+            target_concurrency,
+            total_duration_s,
+            message: "Load test running. Results will be pushed via SSE as timeline snapshots every second, with a final summary when complete.",
+          }, null, 2),
+        },
+      ],
+    };
+  });
+
+  // --- Tool: voiceci_get_status ---
+  mcpServer.registerTool("voiceci_get_status", {
+    title: "Get Run Status",
+    description: "Get the current status and results of a test run by ID. Use this to poll for results if SSE notifications are delayed or interrupted. Returns the run status, aggregate summary, and all individual test results once complete.",
+    inputSchema: {
+      run_id: z.string().uuid().describe("The run ID returned by voiceci_run_suite."),
+    },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
+  }, async ({ run_id }) => {
+    const [run] = await app.db
+      .select()
+      .from(schema.runs)
+      .where(eq(schema.runs.id, run_id))
+      .limit(1);
+
+    if (!run) {
+      return {
+        content: [{ type: "text" as const, text: `Error: Run ${run_id} not found.` }],
+        isError: true,
+      };
+    }
+
+    // Still in progress — return status only
+    if (run.status === "queued" || run.status === "running") {
       return {
         content: [{
           type: "text" as const,
           text: JSON.stringify({
             run_id: run.id,
             status: run.status,
-            aggregate: run.aggregate_json,
-            audio_results: audioResults,
-            conversation_results: conversationResults,
-            error_text: run.error_text ?? null,
-            duration_ms: run.duration_ms,
             started_at: run.started_at,
-            finished_at: run.finished_at,
+            message: run.status === "queued"
+              ? "Run is queued, waiting for execution."
+              : "Run is in progress. Poll again in a few seconds.",
           }, null, 2),
         }],
       };
     }
-  );
+
+    // Completed (pass or fail) — return full results
+    const scenarios = await app.db
+      .select()
+      .from(schema.scenarioResults)
+      .where(eq(schema.scenarioResults.run_id, run_id));
+
+    const audioResults = scenarios
+      .filter((s) => s.test_type === "audio")
+      .map((s) => s.metrics_json);
+    const conversationResults = scenarios
+      .filter((s) => s.test_type === "conversation")
+      .map((s) => s.metrics_json);
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: JSON.stringify({
+          run_id: run.id,
+          status: run.status,
+          aggregate: run.aggregate_json,
+          audio_results: audioResults,
+          conversation_results: conversationResults,
+          error_text: run.error_text ?? null,
+          duration_ms: run.duration_ms,
+          started_at: run.started_at,
+          finished_at: run.finished_at,
+        }, null, 2),
+      }],
+    };
+  });
 
   return mcpServer;
 }

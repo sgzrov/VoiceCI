@@ -40,6 +40,7 @@ export const runs = pgTable("runs", {
   aggregate_json: jsonb("aggregate_json"),
   test_spec_json: jsonb("test_spec_json"),
   error_text: text("error_text"),
+  idempotency_key: text("idempotency_key"),
 });
 
 export const scenarioResults = pgTable("scenario_results", {

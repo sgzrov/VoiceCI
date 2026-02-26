@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { eq } from "drizzle-orm";
 import { schema } from "@voiceci/db";
 import { RunnerCallbackV2Schema, RUNNER_CALLBACK_HEADER } from "@voiceci/shared";
-import { runToSession, mcpServers } from "./mcp.js";
+import { runToSession, runToProgress, mcpServers } from "./mcp.js";
 
 export async function callbackRoutes(app: FastifyInstance) {
   // --- Builder dep-image callback ---
@@ -38,6 +38,61 @@ export async function callbackRoutes(app: FastifyInstance) {
           error_text: body.error_text ?? "Unknown builder error",
         })
         .where(eq(schema.depImages.lockfile_hash, body.lockfile_hash));
+    }
+
+    return reply.send({ ok: true });
+  });
+
+  // --- Per-test progress callback (from runner) ---
+  app.post("/internal/test-progress", async (request, reply) => {
+    const secret = (request.headers as Record<string, string>)[RUNNER_CALLBACK_HEADER];
+    const expectedSecret = process.env["RUNNER_CALLBACK_SECRET"];
+
+    if (!expectedSecret || secret !== expectedSecret) {
+      return reply.status(401).send({ error: "Unauthorized" });
+    }
+
+    const body = request.body as {
+      run_id: string;
+      completed: number;
+      total: number;
+      test_type: "audio" | "conversation";
+      test_name: string;
+      status: "pass" | "fail";
+      duration_ms: number;
+    };
+
+    // Forward as progress notification to MCP client
+    const sessionId = runToSession.get(body.run_id);
+    if (sessionId) {
+      const mcpServer = mcpServers.get(sessionId);
+      const progressToken = runToProgress.get(body.run_id);
+
+      if (mcpServer && progressToken !== undefined) {
+        try {
+          await mcpServer.server.notification({
+            method: "notifications/progress",
+            params: {
+              progressToken,
+              progress: body.completed,
+              total: body.total,
+              message: `${body.test_name}: ${body.status} (${body.duration_ms}ms)`,
+            },
+          });
+        } catch {
+          // Best-effort
+        }
+      } else if (mcpServer) {
+        try {
+          await mcpServer.sendLoggingMessage({
+            level: body.status === "pass" ? "info" : "warning",
+            logger: "voiceci:test-progress",
+            data: body,
+          });
+        } catch {
+          // Best-effort
+        }
+      }
     }
 
     return reply.send({ ok: true });
@@ -93,8 +148,23 @@ export async function callbackRoutes(app: FastifyInstance) {
     const sessionId = runToSession.get(body.run_id);
     if (sessionId) {
       const mcpServer = mcpServers.get(sessionId);
+      const progressToken = runToProgress.get(body.run_id);
       try {
-        if (mcpServer) {
+        if (mcpServer && progressToken !== undefined) {
+          // Use notifications/progress when progressToken is available
+          const totalTests =
+            body.audio_results.length + body.conversation_results.length;
+          await mcpServer.server.notification({
+            method: "notifications/progress",
+            params: {
+              progressToken,
+              progress: totalTests,
+              total: totalTests,
+              message: `${body.status}: ${body.aggregate.audio_tests.passed}/${body.aggregate.audio_tests.total} audio, ${body.aggregate.conversation_tests.passed}/${body.aggregate.conversation_tests.total} conversation — call voiceci_get_status for full results`,
+            },
+          });
+        } else if (mcpServer) {
+          // Fallback to logging when no progressToken
           await mcpServer.sendLoggingMessage({
             level: body.status === "pass" ? "info" : "warning",
             logger: "voiceci:test-result",
@@ -115,6 +185,7 @@ export async function callbackRoutes(app: FastifyInstance) {
         );
       } finally {
         runToSession.delete(body.run_id);
+        runToProgress.delete(body.run_id);
       }
     }
 

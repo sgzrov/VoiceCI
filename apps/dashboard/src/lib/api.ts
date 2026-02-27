@@ -1,6 +1,8 @@
+import type { RunRow, RunDetail } from "./types";
+
 const API_URL = "/backend";
 
-export async function fetchRuns(status?: string) {
+export async function fetchRuns(status?: string): Promise<RunRow[]> {
   const params = new URLSearchParams();
   if (status) params.set("status", status);
   const res = await fetch(`${API_URL}/runs?${params}`, {
@@ -11,7 +13,7 @@ export async function fetchRuns(status?: string) {
   return res.json();
 }
 
-export async function fetchRun(id: string) {
+export async function fetchRun(id: string): Promise<RunDetail> {
   const res = await fetch(`${API_URL}/runs/${id}`, {
     cache: "no-store",
     credentials: "include",

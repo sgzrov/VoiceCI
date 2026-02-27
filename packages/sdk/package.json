@@ -1,0 +1,20 @@
+{
+  "name": "@voiceci/sdk",
+  "version": "0.1.0",
+  "description": "Make any voice agent testable with VoiceCI",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist"
+  },
+  "keywords": ["voiceci", "voice", "agent", "testing", "websocket"],
+  "license": "MIT",
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.5.0",
+    "typescript": "^5.7.0"
+  }
+}

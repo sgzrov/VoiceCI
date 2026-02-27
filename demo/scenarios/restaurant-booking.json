@@ -1,0 +1,43 @@
+{
+  "audio_tests": ["echo", "ttfb", "barge_in", "silence_handling"],
+  "conversation_tests": [
+    {
+      "name": "basic-booking",
+      "caller_prompt": "You are calling La Bella Vita restaurant to book a table for 4 people this Thursday at 7pm. Your name is Sarah Chen. Be natural and conversational.",
+      "max_turns": 8,
+      "eval": [
+        "Did the agent confirm the booking with a confirmation number or ID?",
+        "Did the agent confirm the correct date (Thursday), time (7pm), and party size (4)?",
+        "Did the agent ask for the caller's name?"
+      ],
+      "tool_call_eval": [
+        "Was the book_table tool called with party_size=4?",
+        "Was the book_table tool called with the name 'Sarah Chen' or similar?"
+      ]
+    },
+    {
+      "name": "availability-check",
+      "caller_prompt": "You want to check if La Bella Vita has availability for a large party of 12 this Saturday at 8pm. If available, go ahead and book it under the name 'Johnson'.",
+      "max_turns": 10,
+      "eval": [
+        "Did the agent check availability before booking?",
+        "Did the agent handle the large party size appropriately?",
+        "Was the conversation natural and not robotic?"
+      ],
+      "tool_call_eval": [
+        "Was check_availability called with party_size=12?",
+        "Was book_table called after availability was confirmed?"
+      ]
+    },
+    {
+      "name": "menu-question",
+      "caller_prompt": "You're calling to ask about the menu. You're vegetarian and want to know what options they have. You're not ready to book yet.",
+      "max_turns": 6,
+      "eval": [
+        "Did the agent provide information about vegetarian options?",
+        "Did the agent NOT force a booking when the caller said they weren't ready?",
+        "Was the agent helpful and friendly?"
+      ]
+    }
+  ]
+}

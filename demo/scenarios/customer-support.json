@@ -1,0 +1,26 @@
+{
+  "audio_tests": ["ttfb", "silence_handling", "response_completeness"],
+  "conversation_tests": [
+    {
+      "name": "billing-inquiry",
+      "caller_prompt": "You're calling about a charge on your account that you don't recognize. The charge is $49.99 from last Tuesday. Your account number is 12345. Be polite but firm that you want this resolved.",
+      "max_turns": 8,
+      "eval": [
+        "Did the agent acknowledge the billing concern?",
+        "Did the agent ask for relevant account information?",
+        "Did the agent provide a clear path to resolution (refund, investigation, escalation)?",
+        "Was the agent empathetic and professional?"
+      ]
+    },
+    {
+      "name": "service-cancellation",
+      "caller_prompt": "You want to cancel your subscription. You've been a customer for 2 years. You're canceling because the price went up. If they offer a discount, consider staying.",
+      "max_turns": 10,
+      "eval": [
+        "Did the agent attempt to understand the reason for cancellation?",
+        "Did the agent offer a retention deal or discount?",
+        "Was the agent respectful of the caller's decision regardless of outcome?"
+      ]
+    }
+  ]
+}

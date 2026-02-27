@@ -1,76 +1,79 @@
 import { Card, CardContent } from "@/components/ui/card";
+import type { RunAggregateV2 } from "@/lib/types";
+import { formatDuration } from "@/lib/format";
 
 interface MetricCardsProps {
-  metrics: Record<string, unknown>;
+  aggregate: RunAggregateV2;
 }
 
-export function MetricCards({ metrics }: MetricCardsProps) {
+export function MetricCards({ aggregate }: MetricCardsProps) {
+  const totalTests =
+    aggregate.audio_tests.total + aggregate.conversation_tests.total;
+  const totalPassed =
+    aggregate.audio_tests.passed + aggregate.conversation_tests.passed;
+  const totalFailed =
+    aggregate.audio_tests.failed + aggregate.conversation_tests.failed;
+
   const cards = [
     {
-      label: "Scenarios",
-      value: `${metrics["passed"] ?? 0}/${metrics["total_scenarios"] ?? 0}`,
-      sub: `${metrics["failed"] ?? 0} failed`,
+      label: "Total Tests",
+      value: `${totalPassed}/${totalTests}`,
+      sub: totalFailed > 0 ? `${totalFailed} failed` : "all passed",
+      color: totalFailed > 0 ? "text-red-600" : "text-emerald-600",
     },
-    {
-      label: "Mean Latency",
-      value: `${metrics["mean_latency_ms"] ?? 0}ms`,
-      sub: null,
-    },
-    {
-      label: "P95 Latency",
-      value: `${metrics["p95_latency_ms"] ?? 0}ms`,
-      sub: null,
-    },
-    {
-      label: "Max Latency",
-      value: `${metrics["max_latency_ms"] ?? 0}ms`,
-      sub: null,
-    },
+    ...(aggregate.audio_tests.total > 0
+      ? [
+          {
+            label: "Audio Tests",
+            value: `${aggregate.audio_tests.passed}/${aggregate.audio_tests.total}`,
+            sub:
+              aggregate.audio_tests.failed > 0
+                ? `${aggregate.audio_tests.failed} failed`
+                : "all passed",
+            color:
+              aggregate.audio_tests.failed > 0
+                ? "text-red-600"
+                : "text-emerald-600",
+          },
+        ]
+      : []),
+    ...(aggregate.conversation_tests.total > 0
+      ? [
+          {
+            label: "Conversation Tests",
+            value: `${aggregate.conversation_tests.passed}/${aggregate.conversation_tests.total}`,
+            sub:
+              aggregate.conversation_tests.failed > 0
+                ? `${aggregate.conversation_tests.failed} failed`
+                : "all passed",
+            color:
+              aggregate.conversation_tests.failed > 0
+                ? "text-red-600"
+                : "text-emerald-600",
+          },
+        ]
+      : []),
     {
       label: "Duration",
-      value: `${((metrics["total_duration_ms"] as number) / 1000).toFixed(1)}s`,
+      value: formatDuration(aggregate.total_duration_ms),
       sub: null,
+      color: null,
     },
-    ...(metrics["total_token_usage"]
-      ? [
-          {
-            label: "Tokens",
-            value: String(metrics["total_token_usage"]),
-            sub: metrics["total_cost_usd"]
-              ? `$${metrics["total_cost_usd"]}`
-              : null,
-          },
-        ]
-      : []),
-    ...(metrics["mean_turn_gap_ms"] !== undefined
-      ? [
-          {
-            label: "Mean Turn Gap",
-            value: `${metrics["mean_turn_gap_ms"]}ms`,
-            sub: null,
-          },
-        ]
-      : []),
-    ...(metrics["mean_stt_confidence"] !== undefined
-      ? [
-          {
-            label: "Voice Clarity",
-            value: String(metrics["mean_stt_confidence"]),
-            sub: "STT confidence",
-          },
-        ]
-      : []),
   ];
 
   return (
-    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
+    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
       {cards.map((card) => (
         <Card key={card.label}>
           <CardContent className="pt-4 pb-3">
-            <p className="text-xs text-muted-foreground">{card.label}</p>
-            <p className="text-xl font-bold mt-1">{card.value}</p>
+            <p className="text-xs text-muted-foreground uppercase tracking-wider">
+              {card.label}
+            </p>
+            <p className="text-2xl font-bold mt-1 tabular-nums">{card.value}</p>
             {card.sub && (
-              <p className="text-xs text-muted-foreground mt-0.5">
+              <p
+                className={`text-xs mt-0.5 ${card.color ?? "text-muted-foreground"}`}
+              >
                 {card.sub}
               </p>
             )}

@@ -68,3 +68,33 @@ Use `type: small description` format for commits.
 | `style`    | Formatting only (no logic change)                        |
 | `revert`   | Revert a prior commit                                    |
 
+## Design Context
+
+### Users
+Developers building voice AI agents who use coding agents (Claude Code, Cursor, Windsurf). They connect via MCP — no CLI install needed. They're technical, time-constrained, and care about test results, not UI chrome. They visit the dashboard to review run results, compare baselines, and manage API keys.
+
+### Brand Personality
+**Bold, Innovative, Cutting-edge.** VoiceCI is a new category — CI/CD for voice agents — and the brand should reflect that pioneering position. The tone is confident and direct, never corporate or hand-wavy.
+
+### Emotional Goal
+**Calm clarity.** When developers land on the dashboard, everything should feel organized and immediately scannable. No cognitive overhead. Status is obvious, results are front-and-center, navigation is minimal.
+
+### Aesthetic Direction
+- **Reference:** ElevenLabs — bold hero sections, clean product UI, confident typography, generous whitespace
+- **Anti-reference:** Enterprise bloatware (Salesforce, ServiceNow) — no sidebar forests, no tabs-within-tabs, no information overload
+- **Theme:** Support both light and dark mode, defaulting to system preference
+- **Color palette:** Neutral zinc base. No accent color — let the semantic status colors (green/pass, red/fail, yellow/queued, blue/running) provide the only color in the UI
+- **Typography:** Inter. Bold headings, muted secondary text. Monospace for IDs, hashes, and code
+- **Spacing:** Generous. Prefer whitespace over density
+
+### Design Principles
+1. **Scannable over decorative** — Every pixel should help the developer understand test results faster. No ornamental UI.
+2. **Status through color** — Green, red, yellow, blue are reserved exclusively for semantic status. The rest of the UI stays neutral.
+3. **Progressive disclosure** — Show summary first (run list → run detail → scenario → trace). Don't front-load complexity.
+4. **Developer-native** — Monospace where appropriate, keyboard-friendly, no marketing fluff in the product UI.
+5. **Confident minimalism** — Bold typography and whitespace over borders and backgrounds. If a section feels cluttered, remove elements rather than adding separators.
+
+## Default UI/Frontend Behavior
+For any UI/frontend work, follow Impeccable's `frontend-design` skill and its anti-patterns by default.
+Before finalizing UI changes, do a quick internal pass equivalent to: audit → normalize → polish (no need to ask me to run slash commands).
+

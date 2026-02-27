@@ -9,19 +9,19 @@ interface StatusBadgeProps {
 const statusConfig: Record<string, { label: string; className: string }> = {
   queued: {
     label: "Queued",
-    className: "bg-yellow-500/20 text-yellow-400 border-yellow-500/30",
+    className: "bg-amber-50 text-amber-700 border-amber-200",
   },
   running: {
     label: "Running",
-    className: "bg-blue-500/20 text-blue-400 border-blue-500/30",
+    className: "bg-blue-50 text-blue-700 border-blue-200",
   },
   pass: {
     label: "Pass",
-    className: "bg-green-500/20 text-green-400 border-green-500/30",
+    className: "bg-emerald-50 text-emerald-700 border-emerald-200",
   },
   fail: {
     label: "Fail",
-    className: "bg-red-500/20 text-red-400 border-red-500/30",
+    className: "bg-red-50 text-red-700 border-red-200",
   },
 };
 
@@ -40,7 +40,7 @@ export function StatusBadge({ status, size = "sm" }: StatusBadgeProps) {
       )}
     >
       {status === "running" && (
-        <span className="mr-1.5 h-2 w-2 rounded-full bg-blue-400 animate-pulse" />
+        <span className="mr-1.5 h-2 w-2 rounded-full bg-blue-500 animate-pulse" />
       )}
       {config.label}
     </Badge>

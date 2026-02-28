@@ -1,7 +1,8 @@
 import type { FastifyInstance } from "fastify";
-import { eq, and, desc } from "drizzle-orm";
+import { eq, and, desc, asc } from "drizzle-orm";
 import { schema } from "@voiceci/db";
 import { z } from "zod";
+import { subscribe, unsubscribe } from "../lib/run-subscribers.js";
 
 const CreateRunBody = z.object({
   source_type: z.enum(["bundle", "remote"]),
@@ -85,6 +86,12 @@ export async function runRoutes(app: FastifyInstance) {
       .from(schema.artifacts)
       .where(eq(schema.artifacts.run_id, id));
 
+    const events = await app.db
+      .select()
+      .from(schema.runEvents)
+      .where(eq(schema.runEvents.run_id, id))
+      .orderBy(asc(schema.runEvents.created_at));
+
     const [baseline] = await app.db
       .select()
       .from(schema.baselines)
@@ -95,7 +102,73 @@ export async function runRoutes(app: FastifyInstance) {
       ...run,
       scenarios,
       artifacts: artifactRows,
+      events,
       is_baseline: !!baseline,
+    });
+  });
+
+  // --- SSE stream for live run events ---
+  app.get<{ Params: { id: string } }>("/runs/:id/stream", authPreHandler, async (request, reply) => {
+    const { id } = request.params;
+
+    const [run] = await app.db
+      .select()
+      .from(schema.runs)
+      .where(
+        and(
+          eq(schema.runs.id, id),
+          eq(schema.runs.user_id, request.userId!),
+        )
+      )
+      .limit(1);
+
+    if (!run) {
+      return reply.status(404).send({ error: "Run not found" });
+    }
+
+    // Set SSE headers
+    reply.raw.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    });
+
+    // Send existing events as initial batch
+    const existingEvents = await app.db
+      .select()
+      .from(schema.runEvents)
+      .where(eq(schema.runEvents.run_id, id))
+      .orderBy(asc(schema.runEvents.created_at));
+
+    for (const event of existingEvents) {
+      reply.raw.write(`data: ${JSON.stringify(event)}\n\n`);
+    }
+
+    // If run is already complete, close immediately
+    if (run.status === "pass" || run.status === "fail") {
+      reply.raw.end();
+      return;
+    }
+
+    // Subscribe for new events
+    subscribe(id, reply);
+
+    // Clean up on disconnect
+    request.raw.on("close", () => {
+      unsubscribe(id, reply);
+    });
+
+    // Keep connection alive with periodic heartbeat
+    const heartbeat = setInterval(() => {
+      try {
+        reply.raw.write(": heartbeat\n\n");
+      } catch {
+        clearInterval(heartbeat);
+      }
+    }, 15_000);
+
+    request.raw.on("close", () => {
+      clearInterval(heartbeat);
     });
   });
 

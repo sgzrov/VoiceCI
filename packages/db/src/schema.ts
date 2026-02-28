@@ -115,3 +115,16 @@ export const artifacts = pgTable("artifacts", {
     .notNull()
     .defaultNow(),
 });
+
+export const runEvents = pgTable("run_events", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  run_id: uuid("run_id")
+    .notNull()
+    .references(() => runs.id, { onDelete: "cascade" }),
+  event_type: text("event_type").notNull(),
+  message: text("message").notNull(),
+  metadata_json: jsonb("metadata_json"),
+  created_at: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});

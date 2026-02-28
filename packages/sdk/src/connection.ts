@@ -6,16 +6,19 @@
  * concurrent tests.
  */
 
+import { randomUUID } from "node:crypto";
 import type WebSocket from "ws";
 import type { ToolCallEvent, AudioHandler, AudioHandlerContext } from "./types.js";
 
 export class VoiceCIConnection {
   private ws: WebSocket;
   private handler: AudioHandler;
+  private id: string;
 
   constructor(ws: WebSocket, handler: AudioHandler) {
     this.ws = ws;
     this.handler = handler;
+    this.id = randomUUID();
     this.setup();
   }
 
@@ -32,6 +35,7 @@ export class VoiceCIConnection {
 
   private async handleAudio(pcm: Buffer): Promise<void> {
     const ctx: AudioHandlerContext = {
+      connectionId: this.id,
       reportToolCall: (call) => this.sendToolCall(call),
       sendAudio: (audio) => this.sendAudioFrame(audio),
     };

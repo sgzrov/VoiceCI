@@ -78,11 +78,14 @@ Tests run in parallel with independent connections. For already-deployed agents 
 | Test | What It Measures | When to Include | Duration |
 |------|------------------|-----------------|----------|
 | echo | Feedback loop detection — agent STT picking up its own TTS | ALWAYS include | ~15s |
-| ttfb | Time-to-first-byte latency (p50/p95 over 5 prompts) | Production agents, latency-sensitive apps | ~30s |
+| ttfb | Tiered latency: simple/complex/tool-triggering prompts + TTFW (first word) | Production agents, latency-sensitive apps | ~50s |
 | barge_in | Interrupt handling — does agent stop when user cuts in? | Conversational agents (not one-shot) | ~20s |
 | silence_handling | Does agent stay connected during 8s silence? | Phone/voice agents | ~15s |
 | connection_stability | 5-turn multi-turn robustness, no disconnections | Always good to include | ~30s |
 | response_completeness | Non-truncated, complete sentence responses (≥15 words) | Agents giving detailed answers | ~15s |
+| noise_resilience | Background noise robustness (white/babble/pink at 20/10/5 dB SNR) | Agents used in noisy environments (phone, mobile) | ~120s |
+| endpointing | Mid-sentence pause handling — agent waits vs. interrupts prematurely | Conversational agents | ~45s |
+| audio_quality | Output audio signal quality (clipping, energy consistency, clean edges) | All agents | ~20s |
 
 ---
 
@@ -93,10 +96,19 @@ You can override any threshold via \`audio_test_thresholds\` in voiceci_run_suit
 | Test | Threshold | Default | Override Key |
 |------|-----------|---------|-------------|
 | echo | Loop threshold (unprompted responses) | 2 | \`echo.loop_threshold\` |
-| ttfb | p95 latency | 3000ms | \`ttfb.p95_threshold_ms\` |
+| ttfb | p95 latency (overall) | 3000ms | \`ttfb.p95_threshold_ms\` |
+| ttfb | p95 latency (complex prompts) | 5000ms | \`ttfb.p95_complex_threshold_ms\` |
+| ttfb | p95 TTFW (first word) | none | \`ttfb.p95_ttfw_threshold_ms\` |
 | barge_in | Stop latency | 2000ms | \`barge_in.stop_threshold_ms\` |
 | silence_handling | Silence duration | 8000ms | \`silence_handling.silence_duration_ms\` |
 | response_completeness | Minimum words | 15 | \`response_completeness.min_word_count\` |
+| noise_resilience | Min SNR (dB) agent must handle | 10 | \`noise_resilience.min_pass_snr_db\` |
+| noise_resilience | Max TTFB degradation | 2000ms | \`noise_resilience.max_ttfb_degradation_ms\` |
+| endpointing | Mid-sentence pause duration | 1500ms | \`endpointing.pause_duration_ms\` |
+| endpointing | Min pass ratio (out of 3 trials) | 0.67 | \`endpointing.min_pass_ratio\` |
+| audio_quality | Max clipping ratio | 0.005 | \`audio_quality.max_clipping_ratio\` |
+| audio_quality | Min audio duration | 1000ms | \`audio_quality.min_duration_ms\` |
+| audio_quality | Min energy consistency | 0.4 | \`audio_quality.min_energy_consistency\` |
 
 ---
 
@@ -113,6 +125,9 @@ Every conversation test includes \`metrics.audio_analysis\` — VAD-based speech
 | \`total_internal_silence_ms\` | Total silence within agent turns (not between-turn gaps) | Varies | High relative to total agent audio = agent has processing issues |
 | \`per_turn_speech_segments\` | Speech bursts per agent turn [array] | 1-3 per turn | Many segments (>5) = agent speech is very choppy/fragmented |
 | \`mean_agent_speech_segment_ms\` | Average speech burst duration | 2000-8000ms | <500ms (extremely choppy) or >20,000ms (long monologue) |
+
+**Automatic Warnings:**
+Audio analysis metrics are now graded against configurable thresholds. If a metric exceeds its threshold, a warning appears in \`metrics.audio_analysis_warnings\` with severity ("warning" or "critical") and a human-readable message. These warnings are informational — they do NOT affect the conversation test's pass/fail status.
 
 **How to use these in analysis:**
 - If \`agent_speech_ratio\` is low but conversation passed evals → the agent works but has latency/audio issues worth investigating
@@ -492,11 +507,14 @@ export const RESULT_GUIDE = `# Result Interpretation & Iterative Testing
 
 ### Audio Test Failures
 - **echo fail**: Agent has a feedback loop (STT picks up TTS output). Check audio pipeline isolation, echo cancellation.
-- **ttfb fail**: p95 latency > 3000ms. Check LLM inference time, TTS generation speed, network latency.
+- **ttfb fail**: p95 latency > threshold. Check per-tier metrics (simple vs complex vs tool-triggering) and TTFW delta. High \`ttfw_delta_ms\` means agent produces silence/filler before speaking.
 - **barge_in fail**: Agent took > 2000ms to stop after interruption. Check VAD configuration, stream handling.
 - **silence_handling fail**: Agent disconnected during silence. Check WebSocket timeout settings, keep-alive config.
 - **connection_stability fail**: Disconnected mid-conversation. Check WebSocket reconnection logic, memory leaks.
 - **response_completeness fail**: Truncated response (< 15 words or missing sentence-ending punctuation). Check max_tokens, streaming termination.
+- **noise_resilience fail**: Agent can't handle background noise at SNR >= 10dB. Check STT noise robustness, VAD sensitivity settings, or add noise cancellation preprocessing.
+- **endpointing fail**: Agent interrupts during mid-sentence pauses. Check VAD silence threshold — it's too aggressive. Increase endpointing timeout or add pause detection logic.
+- **audio_quality fail**: Issues with agent's output audio — check \`metrics\` for specific failures (clipping, energy drops, clicks, truncation). Clipping = gain too high; sudden drops = TTS streaming issues; clicks = buffer boundary problems.
 
 ### Conversation Test Failures
 - Read the judge's \`reasoning\` field — it explains WHY.

@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { RunDetailView } from "@/components/run-detail-view";
+import { useRunEvents } from "@/hooks/use-run-events";
 import type { RunDetail } from "@/lib/types";
 
 const API_URL = "/backend";
@@ -12,6 +13,15 @@ export default function RunDetailPage() {
   const id = params.id as string;
   const [run, setRun] = useState<RunDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const isActive = run?.status === "running" || run?.status === "queued";
+
+  // SSE-driven events for active runs, static for completed
+  const { events, isStreaming } = useRunEvents(
+    id,
+    run?.events ?? [],
+    !!isActive,
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -39,9 +49,11 @@ export default function RunDetailPage() {
     };
 
     fetchRun();
-    const isActive =
-      !run || run.status === "running" || run.status === "queued";
-    const interval = setInterval(fetchRun, isActive ? 2000 : 10000);
+
+    // SSE handles live events — keep a slower poll as fallback for
+    // run status, scenarios, and aggregate updates
+    const pollInterval = isActive ? 5000 : 10000;
+    const interval = setInterval(fetchRun, pollInterval);
     return () => {
       cancelled = true;
       clearInterval(interval);
@@ -62,5 +74,12 @@ export default function RunDetailPage() {
   if (error) return <p className="text-red-600 font-mono text-sm">{error}</p>;
   if (!run) return <p className="text-muted-foreground">Loading...</p>;
 
-  return <RunDetailView run={run} onSetBaseline={handleSetBaseline} />;
+  return (
+    <RunDetailView
+      run={run}
+      events={events}
+      isStreaming={isStreaming}
+      onSetBaseline={handleSetBaseline}
+    />
+  );
 }

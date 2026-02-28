@@ -386,4 +386,5 @@ export const DEMO_RUN: RunDetail = {
     },
   ],
   artifacts: [],
+  events: [],
 };

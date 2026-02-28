@@ -20,6 +20,8 @@ export interface AudioHandlerResult {
 }
 
 export interface AudioHandlerContext {
+  /** Stable identifier for this connection — use as a Map key for per-connection state */
+  connectionId: string;
   /** Report a tool call to VoiceCI for evaluation */
   reportToolCall: (call: Omit<ToolCallEvent, "type">) => void;
   /** Send audio back to VoiceCI mid-handler (for streaming responses) */

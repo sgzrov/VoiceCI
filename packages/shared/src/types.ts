@@ -29,6 +29,9 @@ export const AUDIO_TEST_NAMES = [
   "silence_handling",
   "connection_stability",
   "response_completeness",
+  "noise_resilience",
+  "endpointing",
+  "audio_quality",
 ] as const;
 
 export type AudioTestName = (typeof AUDIO_TEST_NAMES)[number];
@@ -73,10 +76,46 @@ export interface PlatformConfig {
 
 export interface AudioTestThresholds {
   echo?: { loop_threshold?: number };
-  ttfb?: { p95_threshold_ms?: number };
+  ttfb?: {
+    p95_threshold_ms?: number;
+    p95_complex_threshold_ms?: number;
+    p95_ttfw_threshold_ms?: number;
+  };
   barge_in?: { stop_threshold_ms?: number };
   silence_handling?: { silence_duration_ms?: number };
   response_completeness?: { min_word_count?: number };
+  noise_resilience?: {
+    min_pass_snr_db?: number;
+    max_ttfb_degradation_ms?: number;
+  };
+  endpointing?: {
+    pause_duration_ms?: number;
+    min_pass_ratio?: number;
+  };
+  audio_quality?: {
+    max_clipping_ratio?: number;
+    min_duration_ms?: number;
+    min_energy_consistency?: number;
+  };
+  audio_analysis_grade?: AudioAnalysisGradeThresholds;
+}
+
+export interface AudioAnalysisGradeThresholds {
+  agent_speech_ratio_min?: number;
+  talk_ratio_vad_max?: number;
+  talk_ratio_vad_min?: number;
+  longest_monologue_max_ms?: number;
+  silence_gaps_over_2s_max?: number;
+  mean_segment_min_ms?: number;
+  mean_segment_max_ms?: number;
+}
+
+export interface AudioAnalysisWarning {
+  metric: string;
+  value: number;
+  threshold: number;
+  severity: "warning" | "critical";
+  message: string;
 }
 
 export interface TestSpec {
@@ -198,6 +237,7 @@ export interface ConversationMetrics {
   behavioral?: BehavioralMetrics;
   tool_calls?: ToolCallMetrics;
   audio_analysis?: AudioAnalysisMetrics;
+  audio_analysis_warnings?: AudioAnalysisWarning[];
   harness_overhead?: HarnessOverhead;
 }
 

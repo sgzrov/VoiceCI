@@ -17,11 +17,17 @@ import { createAudioChannel, type AudioChannelConfig } from "@voiceci/adapters";
 import { runAudioTest } from "./audio-tests/index.js";
 import { runConversationTest } from "./conversation/index.js";
 
+export interface TestStartInfo {
+  test_name: string;
+  test_type: "audio" | "conversation";
+}
+
 export interface ExecuteTestsOpts {
   testSpec: TestSpec;
   channelConfig: AudioChannelConfig;
   audioTestThresholds?: AudioTestThresholds;
   concurrencyLimit?: number;
+  onTestStart?: (info: TestStartInfo) => void;
   onTestComplete?: (result: AudioTestResult | ConversationTestResult) => void;
 }
 
@@ -60,10 +66,12 @@ export async function executeTests(opts: ExecuteTestsOpts): Promise<ExecuteTests
     channelConfig,
     audioTestThresholds,
     concurrencyLimit = ["sip", "retell", "bland"].includes(channelConfig.adapter) ? 5 : 10,
+    onTestStart,
     onTestComplete,
   } = opts;
 
   const audioTasks = (testSpec.audio_tests ?? []).map((testName) => async () => {
+    onTestStart?.({ test_name: testName, test_type: "audio" });
     console.log(`  Audio test: ${testName}`);
     const channel = createAudioChannel(channelConfig);
     try {
@@ -78,6 +86,8 @@ export async function executeTests(opts: ExecuteTestsOpts): Promise<ExecuteTests
   });
 
   const conversationTasks = (testSpec.conversation_tests ?? []).map((spec) => async () => {
+    const testName = spec.name ?? `conversation:${spec.caller_prompt.slice(0, 50)}`;
+    onTestStart?.({ test_name: testName, test_type: "conversation" });
     console.log(`  Conversation: ${spec.caller_prompt.slice(0, 60)}...`);
     const channel = createAudioChannel(channelConfig);
     try {

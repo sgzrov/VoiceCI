@@ -6,3 +6,4 @@ export { AudioRecorder } from "./recorder.js";
 export { pcmToMulaw, mulawToPcm, resample } from "./format.js";
 export { VoiceActivityDetector, type VoiceActivityDetectorConfig, type VADState } from "./vad.js";
 export { BatchVAD, type SpeechSegment } from "./batch-vad.js";
+export { generateWhiteNoise, generateBabbleNoise, generatePinkNoise, mixAudio } from "./noise.js";

@@ -50,9 +50,19 @@ export interface RunRow {
   test_spec_json: TestSpec | null;
 }
 
+export interface RunEventRow {
+  id: string;
+  run_id: string;
+  event_type: string;
+  message: string;
+  metadata_json: Record<string, unknown> | null;
+  created_at: string;
+}
+
 export interface RunDetail extends RunRow {
   scenarios: ScenarioResultRow[];
   artifacts: ArtifactRow[];
+  events: RunEventRow[];
   is_baseline: boolean;
 }
 

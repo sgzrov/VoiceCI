@@ -3,6 +3,30 @@ import { eq } from "drizzle-orm";
 import { schema } from "@voiceci/db";
 import { RunnerCallbackV2Schema, RUNNER_CALLBACK_HEADER } from "@voiceci/shared";
 import { runToSession, runToProgress, mcpServers } from "./mcp/session.js";
+import { broadcast } from "../lib/run-subscribers.js";
+
+/** Push an event to the MCP session for a run (best-effort). */
+function pushToMcp(
+  runId: string,
+  eventType: string,
+  message: string,
+): void {
+  const sessionId = runToSession.get(runId);
+  if (!sessionId) return;
+
+  const mcpServer = mcpServers.get(sessionId);
+  if (!mcpServer) return;
+
+  try {
+    void mcpServer.sendLoggingMessage({
+      level: eventType === "error" ? "warning" : "info",
+      logger: "voiceci:run-event",
+      data: { run_id: runId, event_type: eventType, message },
+    });
+  } catch {
+    // Best-effort
+  }
+}
 
 export async function callbackRoutes(app: FastifyInstance) {
   // --- Builder dep-image callback ---
@@ -43,6 +67,48 @@ export async function callbackRoutes(app: FastifyInstance) {
     return reply.send({ ok: true });
   });
 
+  // --- Run lifecycle event callback (from runner or worker) ---
+  app.post("/internal/run-event", async (request, reply) => {
+    const secret = (request.headers as Record<string, string>)[RUNNER_CALLBACK_HEADER];
+    const expectedSecret = process.env["RUNNER_CALLBACK_SECRET"];
+
+    if (!expectedSecret || secret !== expectedSecret) {
+      return reply.status(401).send({ error: "Unauthorized" });
+    }
+
+    const body = request.body as {
+      run_id: string;
+      event_type: string;
+      message: string;
+      metadata_json?: Record<string, unknown>;
+    };
+
+    const [inserted] = await app.db
+      .insert(schema.runEvents)
+      .values({
+        run_id: body.run_id,
+        event_type: body.event_type,
+        message: body.message,
+        metadata_json: body.metadata_json ?? null,
+      })
+      .returning();
+
+    // Push to SSE subscribers (dashboard)
+    broadcast(body.run_id, {
+      id: inserted!.id,
+      run_id: body.run_id,
+      event_type: body.event_type,
+      message: body.message,
+      metadata_json: body.metadata_json ?? null,
+      created_at: inserted!.created_at.toISOString(),
+    });
+
+    // Push to MCP session (Claude Code / Cursor)
+    pushToMcp(body.run_id, body.event_type, body.message);
+
+    return reply.send({ ok: true });
+  });
+
   // --- Per-test progress callback (from runner) ---
   app.post("/internal/test-progress", async (request, reply) => {
     const secret = (request.headers as Record<string, string>)[RUNNER_CALLBACK_HEADER];
@@ -61,6 +127,22 @@ export async function callbackRoutes(app: FastifyInstance) {
       status: "pass" | "fail";
       duration_ms: number;
     };
+
+    // Broadcast to SSE subscribers (dashboard)
+    broadcast(body.run_id, {
+      run_id: body.run_id,
+      event_type: "test_completed",
+      message: `${body.test_name}: ${body.status} (${body.duration_ms}ms)`,
+      metadata_json: {
+        test_name: body.test_name,
+        test_type: body.test_type,
+        status: body.status,
+        duration_ms: body.duration_ms,
+        completed: body.completed,
+        total: body.total,
+      },
+      created_at: new Date().toISOString(),
+    });
 
     // Forward as progress notification to MCP client
     const sessionId = runToSession.get(body.run_id);
@@ -144,16 +226,27 @@ export async function callbackRoutes(app: FastifyInstance) {
       });
     }
 
-    // Push result to MCP client via SSE if session exists
+    // Broadcast run_complete to SSE subscribers (dashboard)
+    const totalTests = body.audio_results.length + body.conversation_results.length;
+    broadcast(body.run_id, {
+      run_id: body.run_id,
+      event_type: "run_complete",
+      message: `${body.status}: ${body.aggregate.audio_tests.passed}/${body.aggregate.audio_tests.total} audio, ${body.aggregate.conversation_tests.passed}/${body.aggregate.conversation_tests.total} conversation`,
+      metadata_json: {
+        status: body.status,
+        total_tests: totalTests,
+        aggregate: body.aggregate,
+      },
+      created_at: new Date().toISOString(),
+    });
+
+    // Push result to MCP client if session exists
     const sessionId = runToSession.get(body.run_id);
     if (sessionId) {
       const mcpServer = mcpServers.get(sessionId);
       const progressToken = runToProgress.get(body.run_id);
       try {
         if (mcpServer && progressToken !== undefined) {
-          // Use notifications/progress when progressToken is available
-          const totalTests =
-            body.audio_results.length + body.conversation_results.length;
           await mcpServer.server.notification({
             method: "notifications/progress",
             params: {
@@ -164,7 +257,6 @@ export async function callbackRoutes(app: FastifyInstance) {
             },
           });
         } else if (mcpServer) {
-          // Fallback to logging when no progressToken
           await mcpServer.sendLoggingMessage({
             level: body.status === "pass" ? "info" : "warning",
             logger: "voiceci:test-result",

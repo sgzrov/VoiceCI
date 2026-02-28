@@ -53,6 +53,34 @@ export interface TestProgressPayload {
   duration_ms: number;
 }
 
+export interface RunEventPayload {
+  run_id: string;
+  event_type: string;
+  message: string;
+  metadata_json?: Record<string, unknown>;
+}
+
+export async function reportRunEvent(payload: RunEventPayload): Promise<void> {
+  const callbackUrl = process.env["API_CALLBACK_URL"];
+  if (!callbackUrl) return;
+
+  const secret = process.env["RUNNER_CALLBACK_SECRET"] ?? "";
+  const eventUrl = callbackUrl.replace(/\/runner-callback$/, "/run-event");
+
+  try {
+    await fetch(eventUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        [RUNNER_CALLBACK_HEADER]: secret,
+      },
+      body: JSON.stringify(payload),
+    });
+  } catch {
+    // Best-effort — don't fail the run if event reporting fails
+  }
+}
+
 export async function reportTestProgress(payload: TestProgressPayload): Promise<void> {
   const callbackUrl = process.env["API_CALLBACK_URL"];
   if (!callbackUrl) return;

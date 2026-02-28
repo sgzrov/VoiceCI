@@ -55,12 +55,48 @@ export const PlatformConfigSchema = z.object({
   agent_id: z.string().optional(),
 });
 
+export const AudioAnalysisGradeThresholdsSchema = z.object({
+  agent_speech_ratio_min: z.number().min(0).max(1).optional(),
+  talk_ratio_vad_max: z.number().min(0).max(1).optional(),
+  talk_ratio_vad_min: z.number().min(0).max(1).optional(),
+  longest_monologue_max_ms: z.number().min(1000).optional(),
+  silence_gaps_over_2s_max: z.number().int().min(0).optional(),
+  mean_segment_min_ms: z.number().min(0).optional(),
+  mean_segment_max_ms: z.number().min(0).optional(),
+}).optional();
+
+export const AudioAnalysisWarningSchema = z.object({
+  metric: z.string(),
+  value: z.number(),
+  threshold: z.number(),
+  severity: z.enum(["warning", "critical"]),
+  message: z.string(),
+});
+
 export const AudioTestThresholdsSchema = z.object({
   echo: z.object({ loop_threshold: z.number().int().min(1).optional() }).optional(),
-  ttfb: z.object({ p95_threshold_ms: z.number().min(100).optional() }).optional(),
+  ttfb: z.object({
+    p95_threshold_ms: z.number().min(100).optional(),
+    p95_complex_threshold_ms: z.number().min(100).optional(),
+    p95_ttfw_threshold_ms: z.number().min(100).optional(),
+  }).optional(),
   barge_in: z.object({ stop_threshold_ms: z.number().min(100).optional() }).optional(),
   silence_handling: z.object({ silence_duration_ms: z.number().min(1000).optional() }).optional(),
   response_completeness: z.object({ min_word_count: z.number().int().min(1).optional() }).optional(),
+  noise_resilience: z.object({
+    min_pass_snr_db: z.number().min(0).max(40).optional(),
+    max_ttfb_degradation_ms: z.number().min(0).optional(),
+  }).optional(),
+  endpointing: z.object({
+    pause_duration_ms: z.number().min(500).max(5000).optional(),
+    min_pass_ratio: z.number().min(0).max(1).optional(),
+  }).optional(),
+  audio_quality: z.object({
+    max_clipping_ratio: z.number().min(0).max(1).optional(),
+    min_duration_ms: z.number().min(0).optional(),
+    min_energy_consistency: z.number().min(0).max(1).optional(),
+  }).optional(),
+  audio_analysis_grade: AudioAnalysisGradeThresholdsSchema,
 }).optional();
 
 export const ConversationTurnSchema = z.object({
@@ -160,6 +196,7 @@ export const ConversationMetricsSchema = z.object({
   behavioral: BehavioralMetricsSchema.optional(),
   tool_calls: ToolCallMetricsSchema.optional(),
   audio_analysis: AudioAnalysisMetricsSchema.optional(),
+  audio_analysis_warnings: z.array(AudioAnalysisWarningSchema).optional(),
   harness_overhead: HarnessOverheadSchema.optional(),
 });
 

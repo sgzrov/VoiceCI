@@ -8,21 +8,27 @@ import { MetricCards } from "@/components/metric-cards";
 import { AudioTestResults } from "@/components/audio-test-results";
 import { ConversationTestResults } from "@/components/conversation-test-results";
 import { TestConfigSection } from "@/components/test-config-section";
-import type { RunDetail, RunAggregateV2 } from "@/lib/types";
+import type { RunDetail, RunAggregateV2, RunEventRow } from "@/lib/types";
 import { truncateId, formatTimestamp } from "@/lib/format";
+import { RunTimeline } from "@/components/run-timeline";
 
 interface RunDetailViewProps {
   run: RunDetail;
+  events?: RunEventRow[];
+  isStreaming?: boolean;
   onSetBaseline?: () => void;
   isDemo?: boolean;
 }
 
 export function RunDetailView({
   run,
+  events,
+  isStreaming = false,
   onSetBaseline,
   isDemo,
 }: RunDetailViewProps) {
   const aggregate = run.aggregate_json as RunAggregateV2 | null;
+  const timelineEvents = events ?? run.events ?? [];
   const audioScenarios = run.scenarios.filter(
     (s) => s.test_type === "audio"
   );
@@ -88,16 +94,12 @@ export function RunDetailView({
         </Card>
       )}
 
-      {/* Running progress */}
-      {run.status === "running" && (
-        <Card className="border-blue-200 bg-blue-50/50">
-          <CardContent className="py-4 flex items-center gap-3">
-            <span className="h-2 w-2 rounded-full bg-blue-500 animate-pulse" />
-            <p className="text-sm text-blue-700">
-              Test run in progress
-              {run.scenarios.length > 0 &&
-                ` — ${run.scenarios.length} test${run.scenarios.length === 1 ? "" : "s"} completed so far`}
-            </p>
+      {/* Timeline */}
+      {(timelineEvents.length > 0 || isStreaming) && (
+        <Card>
+          <CardContent className="py-4">
+            <h3 className="text-sm font-semibold mb-3">Timeline</h3>
+            <RunTimeline events={timelineEvents} isStreaming={isStreaming} />
           </CardContent>
         </Card>
       )}

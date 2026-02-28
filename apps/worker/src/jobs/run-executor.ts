@@ -13,6 +13,42 @@ import type { AudioChannelConfig } from "@voiceci/adapters";
 import { executeTests } from "@voiceci/runner/executor";
 import { createMachine, waitForMachine, destroyMachine } from "../fly-machines.js";
 
+// ---------------------------------------------------------------------------
+// Event emission — writes to DB and notifies API for SSE/MCP broadcast
+// ---------------------------------------------------------------------------
+
+async function emitEvent(
+  db: Database,
+  runId: string,
+  eventType: string,
+  message: string,
+  metadata?: Record<string, unknown>,
+): Promise<void> {
+  try {
+    // Write to DB
+    await db.insert(schema.runEvents).values({
+      run_id: runId,
+      event_type: eventType,
+      message,
+      metadata_json: metadata ?? null,
+    });
+
+    // Notify API for SSE/MCP broadcast
+    const apiUrl = process.env["API_URL"] ?? "https://voiceci-api.fly.dev";
+    const secret = process.env["RUNNER_CALLBACK_SECRET"] ?? "";
+    void fetch(`${apiUrl}/internal/run-event`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        [RUNNER_CALLBACK_HEADER]: secret,
+      },
+      body: JSON.stringify({ run_id: runId, event_type: eventType, message, metadata_json: metadata }),
+    }).catch(() => {});
+  } catch {
+    // Best-effort — don't fail the run if event emission fails
+  }
+}
+
 interface RunJob {
   run_id: string;
   bundle_key: string | null;
@@ -286,6 +322,8 @@ export async function executeRun(job: RunJob): Promise<void> {
     .set({ status: "running", started_at: new Date() })
     .where(eq(schema.runs.id, job.run_id));
 
+  await emitEvent(db, job.run_id, "run_started", "Run started");
+
   // Already-deployed agents: run tests directly in worker process
   const isPlatformAdapter =
     job.adapter === "vapi" ||
@@ -298,6 +336,7 @@ export async function executeRun(job: RunJob): Promise<void> {
     job.adapter === "webrtc" ||
     !!job.agent_url;
   if (isRemote) {
+    await emitEvent(db, job.run_id, "connecting", `Connecting to remote agent (${job.adapter ?? "ws-voice"})...`);
     return executeRemoteRun(db, job);
   }
 
@@ -311,11 +350,10 @@ export async function executeRun(job: RunJob): Promise<void> {
   let machineId: string | undefined;
 
   try {
-    // S3/R2 credentials — needed for bundle download AND audio artifact uploads
-    const endpoint = (process.env["S3_ENDPOINT"] ?? process.env["R2_ENDPOINT"] ?? "").replace(/\/+$/, "");
-    const bucket = process.env["S3_BUCKET"] ?? process.env["R2_BUCKET"] ?? "";
-    const accessKeyId = process.env["S3_ACCESS_KEY_ID"] ?? process.env["R2_ACCESS_KEY_ID"] ?? "";
-    const secretAccessKey = process.env["S3_SECRET_ACCESS_KEY"] ?? process.env["R2_SECRET_ACCESS_KEY"] ?? "";
+    const endpoint = (process.env["S3_ENDPOINT"] ?? "").replace(/\/+$/, "");
+    const bucket = process.env["S3_BUCKET"] ?? "";
+    const accessKeyId = process.env["S3_ACCESS_KEY_ID"] ?? "";
+    const secretAccessKey = process.env["S3_SECRET_ACCESS_KEY"] ?? "";
 
     // Generate presigned download URL for bundle (only if bundle exists)
     let bundleDownloadUrl: string | undefined;
@@ -334,6 +372,7 @@ export async function executeRun(job: RunJob): Promise<void> {
     }
 
     // Resolve image: use prebaked dep image if available, otherwise base
+    await emitEvent(db, job.run_id, "resolving_image", "Resolving runner image...");
     const resolvedImage = await resolveImage(
       db,
       job.lockfile_hash,
@@ -436,6 +475,7 @@ export async function executeRun(job: RunJob): Promise<void> {
       memoryMb = 2048;
     }
 
+    await emitEvent(db, job.run_id, "provisioning", "Provisioning runner machine...");
     machineId = await createMachine({
       appName,
       image: resolvedImage,
@@ -454,11 +494,14 @@ export async function executeRun(job: RunJob): Promise<void> {
     );
 
     await waitForMachine(appName, machineId, timeoutMs);
+    await emitEvent(db, job.run_id, "machine_complete", "Runner machine finished");
     console.log(`Machine ${machineId} finished for run ${job.run_id}`);
   } catch (err) {
     const errorMessage =
       err instanceof Error ? err.message : "Unknown error";
     console.error(`Run ${job.run_id} failed:`, errorMessage);
+
+    await emitEvent(db, job.run_id, "error", errorMessage);
 
     await db
       .update(schema.runs)

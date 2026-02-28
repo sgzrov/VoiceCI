@@ -25,7 +25,7 @@ import { JudgeLLM } from "./judge-llm.js";
 import { collectUntilEndOfTurn } from "../audio-tests/helpers.js";
 import { computeAllMetrics } from "../metrics/index.js";
 import { AdaptiveThreshold } from "./adaptive-threshold.js";
-import type { TurnAudioData } from "../metrics/audio-analysis.js";
+import { gradeAudioAnalysisMetrics, type TurnAudioData } from "../metrics/audio-analysis.js";
 
 export async function runConversationTest(
   spec: ConversationTestSpec,
@@ -188,6 +188,11 @@ export async function runConversationTest(
       };
     }
 
+    // Grade audio analysis metrics (informational warnings)
+    const audioAnalysisWarnings = audio_analysis
+      ? gradeAudioAnalysisMetrics(audio_analysis)
+      : undefined;
+
     const metrics: ConversationMetrics = {
       turns: transcript.length,
       mean_ttfb_ms: meanTtfb,
@@ -198,6 +203,7 @@ export async function runConversationTest(
       behavioral,
       tool_calls: toolCallMetrics,
       audio_analysis,
+      audio_analysis_warnings: audioAnalysisWarnings?.length ? audioAnalysisWarnings : undefined,
       harness_overhead,
     };
 

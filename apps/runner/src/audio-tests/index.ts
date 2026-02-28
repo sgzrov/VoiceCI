@@ -10,6 +10,9 @@ import { runTtfbTest } from "./ttfb.js";
 import { runSilenceHandlingTest } from "./silence.js";
 import { runConnectionStabilityTest } from "./connection.js";
 import { runCompletenessTest } from "./completeness.js";
+import { runNoiseResilienceTest } from "./noise-resilience.js";
+import { runEndpointingTest } from "./endpointing.js";
+import { runAudioQualityTest } from "./audio-quality.js";
 
 type AudioTestExecutor = (channel: AudioChannel, thresholds?: AudioTestThresholds) => Promise<AudioTestResult>;
 
@@ -20,6 +23,9 @@ const EXECUTORS: Record<AudioTestName, AudioTestExecutor> = {
   silence_handling: runSilenceHandlingTest,
   connection_stability: runConnectionStabilityTest,
   response_completeness: runCompletenessTest,
+  noise_resilience: runNoiseResilienceTest,
+  endpointing: runEndpointingTest,
+  audio_quality: runAudioQualityTest,
 };
 
 /**

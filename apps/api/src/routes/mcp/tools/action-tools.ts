@@ -106,7 +106,7 @@ export function registerActionTools(
     const excludes = "--exclude=node_modules --exclude=.git --exclude=dist --exclude=.next --exclude=.turbo --exclude=coverage";
     const root = project_root ?? ".";
     const tarTarget = project_root
-      ? `-C ${project_root} .`
+      ? `-C "${project_root}" .`
       : ".";
 
     // Compute lockfile hash from whichever lockfile exists

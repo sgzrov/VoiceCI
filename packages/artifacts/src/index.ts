@@ -6,11 +6,11 @@ export { S3Storage } from "./s3.js";
 
 export function createStorageClient(config?: Partial<StorageConfig>): S3Storage {
   const fullConfig: StorageConfig = {
-    endpoint: config?.endpoint ?? process.env["S3_ENDPOINT"] ?? process.env["R2_ENDPOINT"] ?? "",
-    bucket: config?.bucket ?? process.env["S3_BUCKET"] ?? process.env["R2_BUCKET"] ?? "voiceci-bundles",
-    accessKeyId: config?.accessKeyId ?? process.env["S3_ACCESS_KEY_ID"] ?? process.env["R2_ACCESS_KEY_ID"] ?? "",
+    endpoint: config?.endpoint ?? process.env["S3_ENDPOINT"] ?? "",
+    bucket: config?.bucket ?? process.env["S3_BUCKET"] ?? "voiceci-bundles",
+    accessKeyId: config?.accessKeyId ?? process.env["S3_ACCESS_KEY_ID"] ?? "",
     secretAccessKey:
-      config?.secretAccessKey ?? process.env["S3_SECRET_ACCESS_KEY"] ?? process.env["R2_SECRET_ACCESS_KEY"] ?? "",
+      config?.secretAccessKey ?? process.env["S3_SECRET_ACCESS_KEY"] ?? "",
     region: config?.region ?? process.env["S3_REGION"] ?? "auto",
   };
 

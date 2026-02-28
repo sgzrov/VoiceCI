@@ -10,7 +10,7 @@ import type {
 } from "@voiceci/shared";
 import type { AudioChannelConfig } from "@voiceci/adapters";
 import { executeTests } from "./executor.js";
-import { reportResults, reportTestProgress } from "./reporter.js";
+import { reportResults, reportTestProgress, reportRunEvent } from "./reporter.js";
 import { waitForHealth } from "./health-check.js";
 
 const WORK_DIR = "/work";
@@ -27,6 +27,7 @@ async function main() {
   if (bundleDownloadUrl) {
     mkdirSync(WORK_DIR, { recursive: true });
 
+    void reportRunEvent({ run_id: runId, event_type: "downloading_bundle", message: "Downloading bundle..." });
     console.log("Downloading bundle...");
     const response = await fetch(bundleDownloadUrl);
     if (!response.ok) {
@@ -36,6 +37,7 @@ async function main() {
     const arrayBuffer = await response.arrayBuffer();
     writeFileSync("/tmp/bundle.tar.gz", Buffer.from(arrayBuffer));
 
+    void reportRunEvent({ run_id: runId, event_type: "extracting_bundle", message: "Extracting bundle..." });
     console.log("Extracting bundle...");
     execSync(`tar -xzf /tmp/bundle.tar.gz -C ${WORK_DIR}`, { stdio: "inherit" });
   }
@@ -76,11 +78,14 @@ async function main() {
   if (!isRemoteAgent) {
     if (existsSync(join(WORK_DIR, "node_modules"))) {
       console.log("node_modules present (prebaked image), skipping install");
+      void reportRunEvent({ run_id: runId, event_type: "installing_deps", message: "Dependencies prebaked, skipping install" });
     } else {
+      void reportRunEvent({ run_id: runId, event_type: "installing_deps", message: "Installing dependencies..." });
       console.log("Installing dependencies...");
       execSync("npm install", { cwd: WORK_DIR, stdio: "inherit" });
     }
 
+    void reportRunEvent({ run_id: runId, event_type: "starting_agent", message: "Starting agent..." });
     console.log("Starting agent...");
     const startCmd = process.env["START_COMMAND"] ?? "npm run start";
     agentProcess = require("node:child_process").spawn(
@@ -95,8 +100,10 @@ async function main() {
     );
 
     const healthEndpoint = process.env["HEALTH_ENDPOINT"] ?? "/health";
+    void reportRunEvent({ run_id: runId, event_type: "health_check_waiting", message: "Waiting for health check..." });
     console.log("Waiting for agent health...");
     await waitForHealth(`${agentUrl}${healthEndpoint}`);
+    await reportRunEvent({ run_id: runId, event_type: "health_check_passed", message: "Health check passed" });
     console.log("Agent is ready");
   } else {
     console.log(`Using remote agent (${adapterType} adapter)`);
@@ -119,6 +126,14 @@ async function main() {
       testSpec,
       channelConfig,
       audioTestThresholds,
+      onTestStart: (info) => {
+        void reportRunEvent({
+          run_id: runId,
+          event_type: "test_started",
+          message: `Started: ${info.test_name}`,
+          metadata_json: { test_name: info.test_name, test_type: info.test_type },
+        });
+      },
       onTestComplete: (result) => {
         completedTests++;
         const isAudio = "test_name" in result;
@@ -134,6 +149,13 @@ async function main() {
           duration_ms: result.duration_ms,
         });
       },
+    });
+
+    await reportRunEvent({
+      run_id: runId,
+      event_type: "run_complete",
+      message: `Run complete: ${status}`,
+      metadata_json: { status, aggregate },
     });
 
     await reportResults({
